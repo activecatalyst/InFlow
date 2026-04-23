@@ -417,7 +417,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
         ? `Fetch and analyze this job posting URL: ${input.trim()}`
         : `Analyze this job posting:\n\n${input}`;
       const body = {
-        model: "claude-sonnet-4-20250514", max_tokens: 1000,
+        model: "claude-sonnet-4-5", max_tokens: 1000,
         system: ANALYSIS_PROMPT(resume),
         messages: [{ role: "user", content: userMsg }],
       };
