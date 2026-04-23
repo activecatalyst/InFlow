@@ -82,8 +82,72 @@ const stampDate = (job, newStatus) => {
   return { [st.dateKey]: now() };
 };
 
-// ─── ANALYSIS PROMPT ──────────────────────────────────────────────────────────
-const ANALYSIS_PROMPT = (resume) => `You are a brutally honest senior corporate recruiter and hiring manager with 15+ years of experience. No fluff, no sugarcoating, no generic advice.
+// ─── ANALYSIS PROMPTS ─────────────────────────────────────────────────────────
+const TONE_CONFIG = {
+  brutal: {
+    label: "Brutal",
+    icon: "⚡",
+    desc: "No filter. Raw recruiter truth.",
+    persona: "You are a brutally honest senior corporate recruiter and hiring manager with 15+ years of experience. No fluff, no sugarcoating, no generic advice. Call out every gap directly. Do not soften bad news.",
+    verdictStyle: "Be completely direct about their real odds. If their chances are low, say so plainly. Don't encourage false hope.",
+  },
+  honest: {
+    label: "Honest",
+    icon: "◎",
+    desc: "Clear feedback with a path forward.",
+    persona: "You are an experienced senior corporate recruiter and hiring manager with 15+ years of experience. Be honest and specific, but frame feedback constructively — identify gaps clearly while also highlighting genuine strengths and actionable next steps.",
+    verdictStyle: "Be honest about their odds but focus on what they can do to improve their chances. Balance realism with actionable guidance.",
+  },
+};
+
+const ANALYSIS_PROMPT = (resume, tone = "brutal") => {
+  const cfg = TONE_CONFIG[tone] || TONE_CONFIG.brutal;
+  return `${cfg.persona}
+
+You have the candidate's resume below. When given a job posting URL or text:
+1. If a URL, use web search to fetch the full posting. Confirm the role and company you found.
+2. Run this exact analysis:
+
+## STEP 1 — RECRUITER EVALUATION
+- Recruiter Score (1–10) with one-line verdict
+- Top 3 Strengths (specific to this role)
+- Top 3 Gaps (${tone === "brutal" ? "direct, no softening" : "clear but constructive"})
+- How a recruiter reads this background in 2–3 sentences
+- Interview odds: ATS pass / Phone Screen / Interview / Offer (% + one-line reasoning each)
+
+## STEP 2 — HIRING MANAGER VIEW
+- Hiring Manager Score (1–10) with one-line verdict
+- What will resonate (specific to this role and company)
+- What will concern them
+- The one question they will definitely ask
+
+## STEP 3 — RESUME OPTIMIZATION
+Rewrite the professional summary specifically for this role. Then rewrite the 3 most impactful experience bullets. Strong verbs, specific outcomes, natural ATS keyword integration. Human — not robotic.
+
+## STEP 4 — ATS KEYWORDS
+10 specific phrases from this job description the candidate must mirror in their resume and interviews.
+
+## STEP 5 — INTERVIEW PREP
+3 questions this interviewer will almost certainly ask. For each: one paragraph coaching note based on the candidate's actual background. Specific — no generic STAR method advice.
+
+## STEP 6 — RESUME EDIT SUGGESTIONS
+Provide exactly 5 specific, actionable edits to the candidate's existing resume — formatted exactly like this for each edit:
+
+EDIT [number]:
+ORIGINAL: [exact text from their resume]
+SUGGESTED: [your rewrite]
+WHY: [one sentence explaining the improvement]
+
+Make these edits specific to THIS job. Focus on highest-impact changes only.
+
+## STEP 7 — HONEST VERDICT
+One paragraph. ${cfg.verdictStyle}
+
+Candidate Resume:
+${resume}`;
+};
+
+const ANALYSIS_PROMPT_OLD = (resume) => `You are a brutally honest senior corporate recruiter and hiring manager with 15+ years of experience. No fluff, no sugarcoating, no generic advice.
 
 You have the candidate's resume below. When given a job posting URL or text:
 1. If a URL, use web search to fetch the full posting. Confirm the role and company you found.
@@ -402,9 +466,12 @@ function AnalyzerPage({ resume, onSaveJob }) {
   const [jobTitle, setJobTitle] = useState("");
   const [company, setCompany] = useState("");
   const [savedToast, setSavedToast] = useState(false);
+  const [tone, setTone] = useState("brutal");
+  const [edits, setEdits] = useState([]);
   const resultRef = useRef(null);
 
-  const analyze = async () => {
+  const analyze = async (overrideTone) => {
+    const activeTone = overrideTone || tone;
     if (!input.trim()) return;
     setLoading(true); setResult(""); setScores({ recruiter: null, hm: null });
     setPhase("loading"); setPhaseIdx(0); setError("");
@@ -418,7 +485,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
         : `Analyze this job posting:\n\n${input}`;
       const body = {
         model: "claude-sonnet-4-5", max_tokens: 1000,
-        system: ANALYSIS_PROMPT(resume),
+        system: ANALYSIS_PROMPT(resume, activeTone),
         messages: [{ role: "user", content: userMsg }],
       };
       if (isUrl(input)) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
@@ -438,6 +505,15 @@ function AnalyzerPage({ resume, onSaveJob }) {
       const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
       clearInterval(interval);
       setResult(text); setScores(parseScores(text)); setPhase("done");
+      // Parse resume edits for prominent display
+      const editsRaw = [...text.matchAll(/EDIT \d+:[\s\S]*?(?=EDIT \d+:|## STEP 7|$)/g)].map(m => {
+        const block = m[0];
+        const orig = (block.match(/ORIGINAL:\s*(.+?)(?=SUGGESTED:|$)/s) || [])[1]?.trim();
+        const sugg = (block.match(/SUGGESTED:\s*(.+?)(?=WHY:|$)/s) || [])[1]?.trim();
+        const why  = (block.match(/WHY:\s*(.+?)(?=EDIT \d+:|$)/s) || [])[1]?.trim();
+        return orig && sugg ? { orig, sugg, why } : null;
+      }).filter(Boolean);
+      setEdits(editsRaw);
       const tm = text.match(/(?:role|position)[:\s]+([^\n.]{5,60})/i);
       const cm = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/);
       if (tm) setJobTitle(tm[1].trim().slice(0, 60));
@@ -458,7 +534,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
     setSavedToast(true); setTimeout(() => setSavedToast(false), 2500);
   };
 
-  const reset = () => { setInput(""); setResult(""); setScores({ recruiter: null, hm: null }); setPhase("idle"); setError(""); setJobTitle(""); setCompany(""); };
+  const reset = () => { setInput(""); setResult(""); setScores({ recruiter: null, hm: null }); setPhase("idle"); setError(""); setJobTitle(""); setCompany(""); setEdits([]); };
 
   return (
     <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
@@ -519,10 +595,69 @@ function AnalyzerPage({ resume, onSaveJob }) {
       {/* Results */}
       {phase === "done" && result && (
         <div ref={resultRef}>
+
+          {/* Tone Selector */}
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "16px 20px", marginBottom: "16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
+            <div>
+              <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Analysis Tone</p>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: 0 }}>Switch tone and re-analyze instantly</p>
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
+                <button key={key} onClick={() => { setTone(key); analyze(key); }} style={{
+                  padding: "8px 18px", borderRadius: "8px", border: `1px solid ${tone === key ? C.accent : C.border2}`,
+                  background: tone === key ? "#0d1a10" : "transparent",
+                  color: tone === key ? C.accent : C.textDim,
+                  fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em",
+                  cursor: "pointer", display: "flex", alignItems: "center", gap: "6px",
+                  fontWeight: tone === key ? 600 : 400,
+                }}>
+                  <span style={{ fontSize: "13px" }}>{cfg.icon}</span> {cfg.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div style={{ display: "flex", gap: "14px", marginBottom: "16px" }}>
             <ScoreCard label="Recruiter Score" score={scores.recruiter} />
             <ScoreCard label="Hiring Manager Score" score={scores.hm} />
           </div>
+
+          {/* Resume Edits — Prominent Section */}
+          {edits.length > 0 && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "24px 28px", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "20px" }}>
+                <div style={{ width: "3px", height: "16px", background: C.accent, borderRadius: "2px" }} />
+                <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.16em", textTransform: "uppercase", margin: 0 }}>Resume Edit Suggestions</p>
+                <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, marginLeft: "auto" }}>{edits.length} edits</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                {edits.map((edit, i) => (
+                  <div key={i} style={{ borderRadius: "10px", overflow: "hidden", border: `1px solid ${C.border}` }}>
+                    <div style={{ padding: "8px 14px", background: C.surface2, borderBottom: `1px solid ${C.border}` }}>
+                      <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em" }}>EDIT {i + 1}</span>
+                    </div>
+                    <div style={{ padding: "12px 14px", background: "#1a0d0d", borderBottom: `1px solid ${C.border}` }}>
+                      <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.red, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.7 }}>ORIGINAL</p>
+                      <p style={{ fontFamily: T.body, fontSize: "13px", color: "#FCA5A5", margin: 0, lineHeight: 1.65 }}>{edit.orig}</p>
+                    </div>
+                    <div style={{ padding: "12px 14px", background: "#0a1a0d", borderBottom: edit.why ? `1px solid ${C.border}` : "none" }}>
+                      <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.7 }}>SUGGESTED</p>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
+                        <p style={{ fontFamily: T.body, fontSize: "13px", color: C.mint, margin: 0, lineHeight: 1.65, flex: 1 }}>{edit.sugg}</p>
+                        <button onClick={() => navigator.clipboard?.writeText(edit.sugg)} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "4px 10px", fontFamily: T.mono, fontSize: "9px", color: C.textDim, cursor: "pointer", flexShrink: 0, letterSpacing: "0.08em" }}>Copy</button>
+                      </div>
+                    </div>
+                    {edit.why && (
+                      <div style={{ padding: "10px 14px", background: C.surface2 }}>
+                        <p style={{ fontFamily: T.body, fontSize: "12px", color: C.textDim, margin: 0, lineHeight: 1.6, fontStyle: "italic" }}>↳ {edit.why}</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Save card */}
           <div style={{ background: "#0d1a10", border: `1px solid ${C.accent}22`, borderRadius: "12px", padding: "20px 22px", marginBottom: "16px" }}>
