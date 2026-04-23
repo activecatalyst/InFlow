@@ -333,8 +333,8 @@ function Onboarding({ onComplete }) {
         <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "56px" }}>
           <svg width="30" height="30" viewBox="0 0 48 48">
             <rect width="48" height="48" rx="10" fill={C.bg} stroke={C.border2} strokeWidth="2"/>
-            <circle cx="24" cy="11" r="4.5" fill={C.accent}/>
-            <path d="M10 34 C15 34 15 24 24 24 C33 24 33 34 38 34" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
+            <circle cx="24" cy="13" r="4.5" fill={C.accent}/>
+            <path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
           </svg>
           <span style={{ fontFamily: T.display, fontSize: "22px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em" }}>inflow</span>
         </div>
@@ -876,8 +876,8 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <svg width="24" height="24" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
             <rect width="48" height="48" rx="10" fill={C.bg} stroke={C.border2} strokeWidth="2"/>
-            <circle cx="24" cy="11" r="4.5" fill={C.accent}/>
-            <path d="M10 34 C15 34 15 24 24 24 C33 24 33 34 38 34" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
+            <circle cx="24" cy="13" r="4.5" fill={C.accent}/>
+            <path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
           </svg>
           <span style={{ fontFamily: T.display, fontSize: "18px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em" }}>inflow</span>
         </div>
