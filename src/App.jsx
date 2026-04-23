@@ -30,7 +30,7 @@ const T = {
 };
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
-const KEYS = { resume: "inflow_resume_v2", jobs: "inflow_jobs_v2", apiKey: "inflow_api_key" };
+const KEYS = { resume: "inflow_resume_v2", jobs: "inflow_jobs_v2", apiKey: "inflow_api_key", proxyUrl: "inflow_proxy_url" };
 const store = {
   get: async (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: async (k, v) => { try { localStorage.setItem(k, v); } catch {} },
@@ -406,12 +406,13 @@ function AnalyzerPage({ resume, onSaveJob }) {
 
   const analyze = async () => {
     if (!input.trim()) return;
-    const apiKey = localStorage.getItem(KEYS.apiKey);
-    if (!apiKey) { setError("No API key found. Please add your Anthropic API key in Settings."); return; }
     setLoading(true); setResult(""); setScores({ recruiter: null, hm: null });
     setPhase("loading"); setPhaseIdx(0); setError("");
     const interval = setInterval(() => setPhaseIdx(p => (p + 1) % PHASES.length), 1800);
     try {
+      const apiKey = localStorage.getItem(KEYS.apiKey);
+      const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
+      if (!apiKey) { setError("No API key found. Go to Settings and add your Anthropic API key."); clearInterval(interval); setPhase("idle"); setLoading(false); return; }
       const userMsg = isUrl(input)
         ? `Fetch and analyze this job posting URL: ${input.trim()}`
         : `Analyze this job posting:\n\n${input}`;
@@ -421,18 +422,19 @@ function AnalyzerPage({ resume, onSaveJob }) {
         messages: [{ role: "user", content: userMsg }],
       };
       if (isUrl(input)) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-allow-browser": "true",
-        },
-        body: JSON.stringify(body),
-      });
+
+      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, '') : "https://api.anthropic.com/v1/messages";
+      const headers = {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      };
+      if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
+
+      const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
+      if (data.error) throw new Error(`API error: ${data.error.message || data.error.type}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
       clearInterval(interval);
       setResult(text); setScores(parseScores(text)); setPhase("done");
@@ -442,7 +444,10 @@ function AnalyzerPage({ resume, onSaveJob }) {
       if (cm) setCompany(cm[1].trim().slice(0, 40));
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
     } catch (err) {
-      clearInterval(interval); setError(err.message || "Something went wrong."); setPhase("idle");
+      clearInterval(interval);
+      const msg = err.message || "Something went wrong.";
+      setError(msg.includes("fetch") ? "Network error — check your connection and try again." : msg);
+      setPhase("idle");
     }
     setLoading(false);
   };
@@ -758,6 +763,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
 function SettingsPage({ resume, onUpdateResume }) {
   const [draft, setDraft] = useState(resume);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(KEYS.apiKey) || "");
+  const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem(KEYS.proxyUrl) || "");
   const [saved, setSaved] = useState(false);
   const [keySaved, setKeySaved] = useState(false);
   const charOk = draft.trim().length >= 100;
@@ -772,10 +778,12 @@ function SettingsPage({ resume, onUpdateResume }) {
   const saveKey = () => {
     if (!apiKey.trim()) return;
     localStorage.setItem(KEYS.apiKey, apiKey.trim());
+    if (proxyUrl.trim()) localStorage.setItem(KEYS.proxyUrl, proxyUrl.trim());
+    else localStorage.removeItem(KEYS.proxyUrl);
     setKeySaved(true); setTimeout(() => setKeySaved(false), 2500);
   };
 
-  const clearKey = () => { localStorage.removeItem(KEYS.apiKey); setApiKey(""); };
+  const clearKey = () => { localStorage.removeItem(KEYS.apiKey); localStorage.removeItem(KEYS.proxyUrl); setApiKey(""); setProxyUrl(""); };
 
   return (
     <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
@@ -790,17 +798,29 @@ function SettingsPage({ resume, onUpdateResume }) {
           <a href="https://console.anthropic.com" target="_blank" rel="noreferrer">console.anthropic.com</a>.
         </p>
         <div style={{ marginBottom: "14px" }}>
+          <Label>API Key</Label>
           <input
             type="password"
             value={apiKey}
             onChange={e => setApiKey(e.target.value)}
             placeholder="sk-ant-..."
+            style={{ width: "100%", background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "12px 16px", fontSize: "14px", color: C.text, fontFamily: T.mono, outline: "none", boxSizing: "border-box", marginBottom: "14px" }}
+          />
+          <Label>Proxy URL <span style={{ color: C.textDim, textTransform: "none", letterSpacing: 0, fontFamily: T.body, fontSize: "13px" }}>— optional, fixes CORS errors</span></Label>
+          <input
+            type="text"
+            value={proxyUrl}
+            onChange={e => setProxyUrl(e.target.value)}
+            placeholder="https://your-worker.workers.dev"
             style={{ width: "100%", background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "12px 16px", fontSize: "14px", color: C.text, fontFamily: T.mono, outline: "none", boxSizing: "border-box" }}
           />
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, lineHeight: 1.7, margin: "10px 0 0" }}>
+            Seeing "Access-Control-Allow-Origin" errors? Deploy <code style={{ fontFamily: T.mono, fontSize: "12px", color: C.textSub }}>cloudflare-worker/proxy.js</code> to a free Cloudflare Worker and paste the URL here.
+          </p>
         </div>
         <div style={{ display: "flex", gap: "12px" }}>
-          <Btn onClick={saveKey} disabled={!apiKey.trim()}>{keySaved ? "✓ Key Saved" : "Save API Key"}</Btn>
-          {localStorage.getItem(KEYS.apiKey) && <Btn variant="danger" onClick={clearKey} small>Clear Key</Btn>}
+          <Btn onClick={saveKey} disabled={!apiKey.trim()}>{keySaved ? "✓ Saved" : "Save Settings"}</Btn>
+          {localStorage.getItem(KEYS.apiKey) && <Btn variant="danger" onClick={clearKey} small>Clear</Btn>}
         </div>
       </div>
 
