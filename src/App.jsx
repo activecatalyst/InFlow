@@ -331,9 +331,11 @@ function Onboarding({ onComplete }) {
       <div style={{ width: "100%", maxWidth: "580px" }}>
         {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "56px" }}>
-          <div style={{ width: "30px", height: "30px", background: C.accent, borderRadius: "7px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ width: "10px", height: "10px", background: C.bg, borderRadius: "2px" }} />
-          </div>
+          <svg width="30" height="30" viewBox="0 0 48 48">
+            <rect width="48" height="48" rx="10" fill={C.bg} stroke={C.border2} strokeWidth="2"/>
+            <circle cx="24" cy="11" r="4.5" fill={C.accent}/>
+            <path d="M10 34 C15 34 15 24 24 24 C33 24 33 34 38 34" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
+          </svg>
           <span style={{ fontFamily: T.display, fontSize: "22px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em" }}>inflow</span>
         </div>
 
@@ -872,9 +874,11 @@ export default function App() {
       <nav style={{ borderBottom: `1px solid ${C.border}`, padding: "0 28px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: `${C.bg}f0`, backdropFilter: "blur(20px)", zIndex: 50, height: "56px" }}>
         {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <div style={{ width: "24px", height: "24px", background: C.accent, borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <div style={{ width: "8px", height: "8px", background: C.bg, borderRadius: "2px" }} />
-          </div>
+          <svg width="24" height="24" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
+            <rect width="48" height="48" rx="10" fill={C.bg} stroke={C.border2} strokeWidth="2"/>
+            <circle cx="24" cy="11" r="4.5" fill={C.accent}/>
+            <path d="M10 34 C15 34 15 24 24 24 C33 24 33 34 38 34" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
+          </svg>
           <span style={{ fontFamily: T.display, fontSize: "18px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em" }}>inflow</span>
         </div>
 
