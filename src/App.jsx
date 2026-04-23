@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useRegisterSW } from 'virtual:pwa-register/react';
 
 // ─── DESIGN TOKENS — Graphite & Sage ─────────────────────────────────────────
 const C = {
@@ -822,6 +823,18 @@ function SettingsPage({ resume, onUpdateResume }) {
   );
 }
 
+// ─── PWA UPDATE TOAST ─────────────────────────────────────────────────────────
+function UpdateToast() {
+  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW();
+  if (!needRefresh) return null;
+  return (
+    <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', background: C.surface, border: `1px solid ${C.accent}44`, borderRadius: '10px', padding: '12px 20px', display: 'flex', alignItems: 'center', gap: '16px', zIndex: 999, boxShadow: `0 4px 24px #00000066` }}>
+      <span style={{ fontFamily: T.body, fontSize: '14px', color: C.textMid }}>New version available</span>
+      <button onClick={() => updateServiceWorker(true)} style={{ background: C.accent, color: '#0a0b0a', border: 'none', borderRadius: '6px', padding: '6px 14px', fontFamily: T.mono, fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', cursor: 'pointer', fontWeight: 600 }}>Update</button>
+    </div>
+  );
+}
+
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const [ready, setReady]   = useState(false);
@@ -904,6 +917,7 @@ export default function App() {
       {page === "analyzer" && <AnalyzerPage resume={resume} onSaveJob={handleSaveJob} />}
       {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} />}
       {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} />}
+      <UpdateToast />
     </div>
   );
 }
