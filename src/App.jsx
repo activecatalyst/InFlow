@@ -271,14 +271,13 @@ const STEP_LABELS = {
 };
 
 function StepAccordion({ text }) {
-  const [open, setOpen] = useState("STEP 1");
+  const [open, setOpen] = useState(null); // all collapsed by default
 
   // Split text into sections by ## STEP markers
   const sections = [];
   let preamble = "";
   const stepRegex = /## (STEP \d+[^\n]*)/g;
   const parts = text.split(stepRegex);
-  // parts = [preamble, "STEP 1 — ...", content1, "STEP 2 — ...", content2, ...]
   if (parts.length > 1) {
     preamble = parts[0];
     for (let i = 1; i < parts.length; i += 2) {
@@ -292,28 +291,46 @@ function StepAccordion({ text }) {
 
   if (sections.length === 0) return <RenderLines text={text} />;
 
+  // Step accent colors for visual variety
+  const stepColors = {
+    "STEP 1": C.accent,
+    "STEP 2": C.yellow,
+    "STEP 3": C.mint,
+    "STEP 4": C.blue,
+    "STEP 5": C.orange,
+    "STEP 6": C.red,
+    "STEP 7": C.accent,
+  };
+
   return (
     <div>
-      {preamble.trim() && <RenderLines text={preamble} />}
-      <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+      {preamble.trim() && (
+        <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "14px 18px", marginBottom: "10px" }}>
+          <RenderLines text={preamble} />
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
         {sections.map(({ key, friendlyTitle, body }) => {
           const isOpen = open === key;
+          const stepColor = stepColors[key] || C.accent;
           return (
-            <div key={key} style={{ border: `1px solid ${isOpen ? C.border2 : C.border}`, borderRadius: "10px", overflow: "hidden", transition: "border-color 0.2s" }}>
+            <div key={key} style={{ border: `1px solid ${isOpen ? stepColor + "55" : C.border}`, borderRadius: "10px", overflow: "hidden", transition: "border-color 0.2s", background: isOpen ? C.surface : "transparent" }}>
               <button
                 onClick={() => setOpen(isOpen ? null : key)}
-                style={{ width: "100%", padding: "14px 18px", background: isOpen ? C.surface2 : "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}
+                style={{ width: "100%", padding: "13px 18px", background: "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <div style={{ width: "3px", height: "14px", background: isOpen ? C.accent : C.textDim, borderRadius: "2px", flexShrink: 0, transition: "background 0.2s" }} />
-                  <span style={{ fontFamily: T.mono, fontSize: "10px", color: isOpen ? C.accent : C.textDim, letterSpacing: "0.14em", textTransform: "uppercase" }}>{key}</span>
+                  <div style={{ width: "3px", height: "14px", background: isOpen ? stepColor : C.textDim, borderRadius: "2px", flexShrink: 0, transition: "background 0.2s" }} />
+                  <span style={{ fontFamily: T.mono, fontSize: "10px", color: isOpen ? stepColor : C.textDim, letterSpacing: "0.14em", textTransform: "uppercase" }}>{key}</span>
                   <span style={{ fontFamily: T.body, fontSize: "14px", color: isOpen ? C.text : C.textSub, fontWeight: isOpen ? 500 : 400 }}>{friendlyTitle}</span>
                 </div>
-                <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim, flexShrink: 0 }}>{isOpen ? "▲" : "▼"}</span>
+                <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim, flexShrink: 0 }}>{isOpen ? "▲" : "▼"}</span>
               </button>
               {isOpen && (
-                <div style={{ padding: "16px 22px 20px", borderTop: `1px solid ${C.border}` }}>
-                  <RenderLines text={body} />
+                <div style={{ borderTop: `1px solid ${stepColor}33` }}>
+                  <div style={{ padding: "20px 22px 22px" }}>
+                    <RenderLines text={body} />
+                  </div>
                 </div>
               )}
             </div>
@@ -325,40 +342,83 @@ function StepAccordion({ text }) {
 }
 
 // ─── INLINE MARKDOWN RENDERER ─────────────────────────────────────────────────
-const RenderLines = ({ text }) => text.split('\n').map((line, i) => {
-  if (line.startsWith('### ')) return (
-    <h3 key={i} style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: "18px 0 8px", fontWeight: 700, lineHeight: 1.4 }}>{line.slice(4)}</h3>
-  );
-  if (/^EDIT \d+:/.test(line)) return (
-    <p key={i} style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, margin: "20px 0 6px", letterSpacing: "0.06em", fontWeight: 500 }}>{line}</p>
-  );
-  if (line.startsWith('ORIGINAL:')) return (
-    <div key={i} style={{ background: "#1a0d0d", border: `1px solid ${C.red}33`, borderRadius: "6px", padding: "8px 12px", margin: "4px 0" }}>
-      <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.red, margin: 0, lineHeight: 1.6 }}>{line}</p>
-    </div>
-  );
-  if (line.startsWith('SUGGESTED:')) return (
-    <div key={i} style={{ background: "#0d1a10", border: `1px solid ${C.accent}33`, borderRadius: "6px", padding: "8px 12px", margin: "4px 0" }}>
-      <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, margin: 0, lineHeight: 1.6 }}>{line}</p>
-    </div>
-  );
-  if (line.startsWith('WHY:')) return (
-    <p key={i} style={{ fontFamily: T.body, fontSize: "14px", color: C.textSub, margin: "4px 0 12px", fontStyle: "italic", lineHeight: 1.65 }}>{line.slice(4)}</p>
-  );
-  if (line.match(/^[-*] /)) return (
-    <div key={i} style={{ display: "flex", gap: "10px", margin: "6px 0" }}>
-      <span style={{ color: C.accent, flexShrink: 0, marginTop: "5px", fontSize: "10px" }}>▸</span>
-      <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, margin: 0, lineHeight: 1.75 }}>{line.slice(2).replace(/\*\*(.*?)\*\*/g, (_, t) => t)}</p>
-    </div>
-  );
-  if (line.trim() === '') return <div key={i} style={{ height: "8px" }} />;
-  const parts = line.split(/\*\*(.*?)\*\*/g);
-  return (
-    <p key={i} style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "4px 0" }}>
-      {parts.map((p, j) => j % 2 === 1 ? <strong key={j} style={{ color: C.text, fontWeight: 600 }}>{p}</strong> : p)}
-    </p>
-  );
-});
+const RenderLines = ({ text }) => {
+  const lines = text.split('\n');
+  const elements = [];
+  let bulletBuffer = [];
+
+  const flushBullets = () => {
+    if (!bulletBuffer.length) return;
+    elements.push(
+      <div key={`bullets-${elements.length}`} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px", margin: "10px 0", display: "flex", flexDirection: "column", gap: "6px" }}>
+        {bulletBuffer.map((b, bi) => (
+          <div key={bi} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <span style={{ color: C.accent, flexShrink: 0, marginTop: "5px", fontSize: "10px" }}>▸</span>
+            <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, margin: 0, lineHeight: 1.75 }}>{b}</p>
+          </div>
+        ))}
+      </div>
+    );
+    bulletBuffer = [];
+  };
+
+  lines.forEach((line, i) => {
+    if (line.startsWith('### ')) {
+      flushBullets();
+      elements.push(<h3 key={i} style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: "18px 0 6px", fontWeight: 700, lineHeight: 1.4, paddingBottom: "6px", borderBottom: `1px solid ${C.border}` }}>{line.slice(4)}</h3>);
+    } else if (/^EDIT \d+:/.test(line)) {
+      flushBullets();
+      elements.push(<p key={i} style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, margin: "20px 0 6px", letterSpacing: "0.06em", fontWeight: 500 }}>{line}</p>);
+    } else if (line.startsWith('ORIGINAL:')) {
+      flushBullets();
+      elements.push(
+        <div key={i} style={{ background: "#1a0d0d", border: `1px solid ${C.red}33`, borderRadius: "6px", padding: "10px 14px", margin: "4px 0" }}>
+          <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.red, opacity: 0.6, margin: "0 0 4px", letterSpacing: "0.1em" }}>ORIGINAL</p>
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: "#FCA5A5", margin: 0, lineHeight: 1.6 }}>{line.replace('ORIGINAL:', '').trim()}</p>
+        </div>
+      );
+    } else if (line.startsWith('SUGGESTED:')) {
+      elements.push(
+        <div key={i} style={{ background: "#0a1a0d", border: `1px solid ${C.accent}33`, borderRadius: "6px", padding: "10px 14px", margin: "4px 0" }}>
+          <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, opacity: 0.6, margin: "0 0 4px", letterSpacing: "0.1em" }}>SUGGESTED</p>
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.mint, margin: 0, lineHeight: 1.6 }}>{line.replace('SUGGESTED:', '').trim()}</p>
+        </div>
+      );
+    } else if (line.startsWith('WHY:')) {
+      elements.push(<p key={i} style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: "4px 0 12px", fontStyle: "italic", lineHeight: 1.65, paddingLeft: "4px" }}>↳ {line.slice(4).trim()}</p>);
+    } else if (line.match(/^[-*] /)) {
+      bulletBuffer.push(line.slice(2).replace(/\*\*(.*?)\*\*/g, (_, t) => t));
+    } else if (line.trim() === '') {
+      flushBullets();
+      elements.push(<div key={i} style={{ height: "8px" }} />);
+    } else if (line.startsWith('|')) {
+      // Table row — frame as a subtle row
+      flushBullets();
+      const cells = line.split('|').filter(c => c.trim() && !c.match(/^[-\s]+$/));
+      if (cells.length > 0) {
+        elements.push(
+          <div key={i} style={{ display: "grid", gridTemplateColumns: `repeat(${cells.length}, 1fr)`, gap: "0", borderBottom: `1px solid ${C.border}`, padding: "8px 0" }}>
+            {cells.map((cell, ci) => (
+              <span key={ci} style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, lineHeight: 1.5, paddingRight: "12px" }}>
+                {cell.trim().replace(/\*\*(.*?)\*\*/g, (_, t) => t)}
+              </span>
+            ))}
+          </div>
+        );
+      }
+    } else {
+      flushBullets();
+      const parts = line.split(/\*\*(.*?)\*\*/g);
+      elements.push(
+        <p key={i} style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "4px 0" }}>
+          {parts.map((p, j) => j % 2 === 1 ? <strong key={j} style={{ color: C.text, fontWeight: 600 }}>{p}</strong> : p)}
+        </p>
+      );
+    }
+  });
+  flushBullets();
+  return <>{elements}</>;
+};
 
 // ─── TIMELINE ─────────────────────────────────────────────────────────────────
 const Timeline = ({ job }) => {
