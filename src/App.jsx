@@ -106,7 +106,7 @@ const ANALYSIS_PROMPT = (resume, tone = "brutal") => {
 
 You have the candidate's resume below. When given a job posting URL or text:
 1. If a URL, use web search to fetch the full posting. Confirm the role and company you found.
-2. Run this exact analysis:
+2. Run this exact analysis. Use ## headers for each step exactly as shown — do not use bold markers or any other format for step headers:
 
 ## STEP 1 — RECRUITER EVALUATION
 - Recruiter Score (1–10) with one-line verdict
@@ -151,7 +151,7 @@ const ANALYSIS_PROMPT_OLD = (resume) => `You are a brutally honest senior corpor
 
 You have the candidate's resume below. When given a job posting URL or text:
 1. If a URL, use web search to fetch the full posting. Confirm the role and company you found.
-2. Run this exact analysis:
+2. Run this exact analysis. Use ## headers for each step exactly as shown — do not use bold markers or any other format for step headers:
 
 ## STEP 1 — RECRUITER EVALUATION
 - Recruiter Score (1–10) with one-line verdict
@@ -276,7 +276,7 @@ function StepAccordion({ text }) {
   // Split text into sections by ## STEP markers
   const sections = [];
   let preamble = "";
-  const stepRegex = /## (STEP \d+[^\n]*)/g;
+  const stepRegex = /(?:##\s*|\*\*)(STEP \d+[^*\n]*)(?:\*\*)?/g;
   const parts = text.split(stepRegex);
   if (parts.length > 1) {
     preamble = parts[0];
@@ -385,7 +385,8 @@ const RenderLines = ({ text }) => {
         </div>
       );
     } else if (line.startsWith('WHY:')) {
-      elements.push(<p key={i} style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: "4px 0 12px", fontStyle: "italic", lineHeight: 1.65, paddingLeft: "4px" }}>↳ {line.slice(4).trim()}</p>);
+      const whyText = line.slice(4).trim().replace(/\*\*/g, '').split('---')[0].trim();
+      if (whyText) elements.push(<p key={i} style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: "4px 0 12px", fontStyle: "italic", lineHeight: 1.65, paddingLeft: "4px" }}>↳ {whyText}</p>);
     } else if (line.match(/^[-*] /)) {
       bulletBuffer.push(line.slice(2).replace(/\*\*(.*?)\*\*/g, (_, t) => t));
     } else if (line.trim() === '') {
@@ -571,6 +572,42 @@ function Onboarding({ onComplete }) {
   );
 }
 
+// ─── EDIT CARD ────────────────────────────────────────────────────────────────
+function EditCard({ edit, index }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ borderBottom: `1px solid ${C.border}` }}>
+      <button onClick={() => setOpen(!open)} style={{ width: "100%", padding: "12px 22px", background: "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+          <span style={{ fontFamily: T.mono, fontSize: "9px", color: open ? C.accent : C.textDim, letterSpacing: "0.1em", flexShrink: 0 }}>EDIT {index + 1}</span>
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{edit.orig?.slice(0, 60)}{edit.orig?.length > 60 ? "..." : ""}</p>
+        </div>
+        <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, flexShrink: 0 }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ borderTop: `1px solid ${C.border}` }}>
+          <div style={{ padding: "12px 22px", background: "#1a0d0d" }}>
+            <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.red, letterSpacing: "0.1em", margin: "0 0 5px", opacity: 0.7 }}>ORIGINAL</p>
+            <p style={{ fontFamily: T.body, fontSize: "13px", color: "#FCA5A5", margin: 0, lineHeight: 1.65 }}>{edit.orig}</p>
+          </div>
+          <div style={{ padding: "12px 22px", background: "#0a1a0d", borderTop: `1px solid ${C.border}` }}>
+            <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em", margin: "0 0 5px", opacity: 0.7 }}>SUGGESTED</p>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.mint, margin: 0, lineHeight: 1.65, flex: 1 }}>{edit.sugg}</p>
+              <button onClick={() => navigator.clipboard?.writeText(edit.sugg)} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "4px 10px", fontFamily: T.mono, fontSize: "9px", color: C.textDim, cursor: "pointer", flexShrink: 0, letterSpacing: "0.08em" }}>Copy</button>
+            </div>
+          </div>
+          {edit.why && (
+            <div style={{ padding: "10px 22px 12px", background: C.surface2, borderTop: `1px solid ${C.border}` }}>
+              <p style={{ fontFamily: T.body, fontSize: "12px", color: C.textDim, margin: 0, lineHeight: 1.6, fontStyle: "italic" }}>↳ {edit.why}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ANALYZER PAGE ────────────────────────────────────────────────────────────
 function AnalyzerPage({ resume, onSaveJob }) {
   const [mode, setMode] = useState("url");
@@ -747,37 +784,19 @@ function AnalyzerPage({ resume, onSaveJob }) {
             <ScoreCard label="Hiring Manager Score" score={scores.hm} />
           </div>
 
-          {/* Resume Edits — Prominent Section */}
+          {/* Resume Edits — Collapsible */}
           {edits.length > 0 && (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "24px 28px", marginBottom: "16px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "20px" }}>
-                <div style={{ width: "3px", height: "16px", background: C.accent, borderRadius: "2px" }} />
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", overflow: "hidden", marginBottom: "16px" }}>
+              {/* Header — always visible */}
+              <div style={{ padding: "16px 22px", display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{ width: "3px", height: "14px", background: C.accent, borderRadius: "2px" }} />
                 <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.16em", textTransform: "uppercase", margin: 0 }}>Resume Edit Suggestions</p>
-                <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, marginLeft: "auto" }}>{edits.length} edits</span>
+                <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, marginLeft: "auto" }}>{edits.length} edits · tap to expand</span>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              {/* Individual collapsible edits */}
+              <div style={{ borderTop: `1px solid ${C.border}`, display: "flex", flexDirection: "column" }}>
                 {edits.map((edit, i) => (
-                  <div key={i} style={{ borderRadius: "10px", overflow: "hidden", border: `1px solid ${C.border}` }}>
-                    <div style={{ padding: "8px 14px", background: C.surface2, borderBottom: `1px solid ${C.border}` }}>
-                      <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em" }}>EDIT {i + 1}</span>
-                    </div>
-                    <div style={{ padding: "12px 14px", background: "#1a0d0d", borderBottom: `1px solid ${C.border}` }}>
-                      <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.red, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.7 }}>ORIGINAL</p>
-                      <p style={{ fontFamily: T.body, fontSize: "13px", color: "#FCA5A5", margin: 0, lineHeight: 1.65 }}>{edit.orig}</p>
-                    </div>
-                    <div style={{ padding: "12px 14px", background: "#0a1a0d", borderBottom: edit.why ? `1px solid ${C.border}` : "none" }}>
-                      <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.7 }}>SUGGESTED</p>
-                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
-                        <p style={{ fontFamily: T.body, fontSize: "13px", color: C.mint, margin: 0, lineHeight: 1.65, flex: 1 }}>{edit.sugg}</p>
-                        <button onClick={() => navigator.clipboard?.writeText(edit.sugg)} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "4px 10px", fontFamily: T.mono, fontSize: "9px", color: C.textDim, cursor: "pointer", flexShrink: 0, letterSpacing: "0.08em" }}>Copy</button>
-                      </div>
-                    </div>
-                    {edit.why && (
-                      <div style={{ padding: "10px 14px", background: C.surface2 }}>
-                        <p style={{ fontFamily: T.body, fontSize: "12px", color: C.textDim, margin: 0, lineHeight: 1.6, fontStyle: "italic" }}>↳ {edit.why}</p>
-                      </div>
-                    )}
-                  </div>
+                  <EditCard key={i} edit={edit} index={i} />
                 ))}
               </div>
             </div>
