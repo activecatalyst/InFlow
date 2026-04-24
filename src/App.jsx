@@ -259,18 +259,76 @@ const ScoreCard = ({ label, score }) => (
   </div>
 );
 
-// ─── MARKDOWN RENDERER ────────────────────────────────────────────────────────
-const Render = ({ text }) => text.split('\n').map((line, i) => {
-  if (line.startsWith('## ')) return (
-    <div key={i} style={{ display: "flex", alignItems: "center", gap: "10px", margin: "32px 0 14px" }}>
-      <div style={{ width: "3px", height: "16px", background: C.accent, borderRadius: "2px", flexShrink: 0 }} />
-      <h2 style={{ fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.16em", textTransform: "uppercase", color: C.accent, margin: 0 }}>{line.slice(3)}</h2>
+// ─── STEP ACCORDION RENDERER ─────────────────────────────────────────────────
+const STEP_LABELS = {
+  "STEP 1": "Recruiter Evaluation",
+  "STEP 2": "Hiring Manager View",
+  "STEP 3": "Resume Optimization",
+  "STEP 4": "ATS Keywords",
+  "STEP 5": "Interview Prep",
+  "STEP 6": "Resume Edit Suggestions",
+  "STEP 7": "Honest Verdict",
+};
+
+function StepAccordion({ text }) {
+  const [open, setOpen] = useState("STEP 1");
+
+  // Split text into sections by ## STEP markers
+  const sections = [];
+  let preamble = "";
+  const stepRegex = /## (STEP \d+[^\n]*)/g;
+  const parts = text.split(stepRegex);
+  // parts = [preamble, "STEP 1 — ...", content1, "STEP 2 — ...", content2, ...]
+  if (parts.length > 1) {
+    preamble = parts[0];
+    for (let i = 1; i < parts.length; i += 2) {
+      const header = parts[i];
+      const body = parts[i + 1] || "";
+      const key = header.match(/STEP \d+/)?.[0] || header;
+      const friendlyTitle = Object.entries(STEP_LABELS).find(([k]) => header.includes(k))?.[1] || header;
+      sections.push({ key, header, friendlyTitle, body });
+    }
+  }
+
+  if (sections.length === 0) return <RenderLines text={text} />;
+
+  return (
+    <div>
+      {preamble.trim() && <RenderLines text={preamble} />}
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+        {sections.map(({ key, friendlyTitle, body }) => {
+          const isOpen = open === key;
+          return (
+            <div key={key} style={{ border: `1px solid ${isOpen ? C.border2 : C.border}`, borderRadius: "10px", overflow: "hidden", transition: "border-color 0.2s" }}>
+              <button
+                onClick={() => setOpen(isOpen ? null : key)}
+                style={{ width: "100%", padding: "14px 18px", background: isOpen ? C.surface2 : "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{ width: "3px", height: "14px", background: isOpen ? C.accent : C.textDim, borderRadius: "2px", flexShrink: 0, transition: "background 0.2s" }} />
+                  <span style={{ fontFamily: T.mono, fontSize: "10px", color: isOpen ? C.accent : C.textDim, letterSpacing: "0.14em", textTransform: "uppercase" }}>{key}</span>
+                  <span style={{ fontFamily: T.body, fontSize: "14px", color: isOpen ? C.text : C.textSub, fontWeight: isOpen ? 500 : 400 }}>{friendlyTitle}</span>
+                </div>
+                <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim, flexShrink: 0 }}>{isOpen ? "▲" : "▼"}</span>
+              </button>
+              {isOpen && (
+                <div style={{ padding: "16px 22px 20px", borderTop: `1px solid ${C.border}` }}>
+                  <RenderLines text={body} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
+}
+
+// ─── INLINE MARKDOWN RENDERER ─────────────────────────────────────────────────
+const RenderLines = ({ text }) => text.split('\n').map((line, i) => {
   if (line.startsWith('### ')) return (
     <h3 key={i} style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: "18px 0 8px", fontWeight: 700, lineHeight: 1.4 }}>{line.slice(4)}</h3>
   );
-  // Resume edit formatting
   if (/^EDIT \d+:/.test(line)) return (
     <p key={i} style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, margin: "20px 0 6px", letterSpacing: "0.06em", fontWeight: 500 }}>{line}</p>
   );
@@ -484,7 +542,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
         ? `Fetch and analyze this job posting URL: ${input.trim()}`
         : `Analyze this job posting:\n\n${input}`;
       const body = {
-        model: "claude-sonnet-4-5", max_tokens: 1000,
+        model: "claude-sonnet-4-5", max_tokens: 4000,
         system: ANALYSIS_PROMPT(resume, activeTone),
         messages: [{ role: "user", content: userMsg }],
       };
@@ -518,6 +576,12 @@ function AnalyzerPage({ resume, onSaveJob }) {
       const cm = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/);
       if (tm) setJobTitle(tm[1].trim().slice(0, 60));
       if (cm) setCompany(cm[1].trim().slice(0, 40));
+      // Auto-add to pipeline
+      const autoTitle = text.match(/(?:role|position|job)[:\s]+([^\n.]{5,60})/i)?.[1]?.trim().slice(0, 60) || "Untitled Role";
+      const autoCompany = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/)?.[1]?.trim().slice(0, 40) || "Unknown Company";
+      const t2 = now();
+      onSaveJob({ id: uid(), title: autoTitle, company: autoCompany, url: isUrl(input) ? input.trim() : "", status: "saved", recruiterScore: parseScores(text).recruiter, hmScore: parseScores(text).hm, notes: "", analysis: text, dateAdded: t2, dateSaved: t2, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
+      setSavedToast(true); setTimeout(() => setSavedToast(false), 3000);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
     } catch (err) {
       clearInterval(interval);
@@ -659,19 +723,21 @@ function AnalyzerPage({ resume, onSaveJob }) {
             </div>
           )}
 
-          {/* Save card */}
-          <div style={{ background: "#0d1a10", border: `1px solid ${C.accent}22`, borderRadius: "12px", padding: "20px 22px", marginBottom: "16px" }}>
-            <Label color={C.accent}>Save to Pipeline</Label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "14px" }}>
-              <Field value={jobTitle} onChange={setJobTitle} placeholder="Job Title" />
-              <Field value={company} onChange={setCompany} placeholder="Company" />
+          {/* Auto-saved indicator */}
+          <div style={{ background: "#0d1a10", border: `1px solid ${C.accent}33`, borderRadius: "12px", padding: "14px 20px", marginBottom: "16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ width: "7px", height: "7px", borderRadius: "50%", background: C.accent, boxShadow: `0 0 8px ${C.accent}` }} />
+              <div>
+                <p style={{ fontFamily: T.body, fontSize: "14px", color: C.text, margin: 0, fontWeight: 500 }}>{jobTitle || "Untitled Role"}</p>
+                <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, margin: 0, letterSpacing: "0.08em" }}>{company || "Unknown Company"} · Auto-saved to Pipeline</p>
+              </div>
             </div>
-            <Btn onClick={handleSave}>{savedToast ? "✓ Saved to Pipeline" : "Save to Pipeline →"}</Btn>
+            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.1em" }}>✓ SAVED</span>
           </div>
 
           {/* Analysis */}
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "32px 36px", marginBottom: "16px" }}>
-            <Render text={result} />
+            <StepAccordion text={result} />
           </div>
 
           <div style={{ display: "flex", gap: "12px" }}>
@@ -693,12 +759,19 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
   const [showAdd, setShowAdd] = useState(false);
   const [newJob, setNewJob] = useState({ title: "", company: "", url: "", status: "saved", notes: "" });
 
-  const filtered = filter === "all" ? jobs : jobs.filter(j => j.status === filter);
+  const activeJobs = jobs.filter(j => j.status !== "rejected");
+  const rejectedJobs = jobs.filter(j => j.status === "rejected");
+  const filtered = filter === "all"
+    ? activeJobs
+    : filter === "rejected"
+    ? rejectedJobs
+    : jobs.filter(j => j.status === filter);
+
   const stats = {
-    total:   jobs.length,
-    applied: jobs.filter(j => ["applied","screen","interview","offer"].includes(j.status)).length,
-    active:  jobs.filter(j => ["screen","interview"].includes(j.status)).length,
-    offers:  jobs.filter(j => j.status === "offer").length,
+    total:    activeJobs.length,
+    applied:  activeJobs.filter(j => ["applied","screen","interview","offer"].includes(j.status)).length,
+    active:   activeJobs.filter(j => ["screen","interview"].includes(j.status)).length,
+    offers:   activeJobs.filter(j => j.status === "offer").length,
   };
 
   const changeStatus = (job, s) => onUpdateJob({ ...job, status: s, ...stampDate(job, s) });
@@ -709,6 +782,34 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
     onAddJob({ id: uid(), ...newJob, recruiterScore: null, hmScore: null, analysis: "", dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
     setNewJob({ title: "", company: "", url: "", status: "saved", notes: "" });
     setShowAdd(false);
+  };
+
+  const exportCSV = () => {
+    if (!jobs.length) return;
+    const cols = [
+      "Title", "Company", "Status", "Recruiter Score", "HM Score",
+      "Date Added", "Date Applied", "Date Screen", "Date Interview",
+      "Date Offer", "Date Rejected", "URL", "Notes"
+    ];
+    const escape = (v) => `"${String(v || "").replace(/"/g, '""')}"`;
+    const toRows = (list) => list.map(j => [
+      escape(j.title), escape(j.company), escape(SM[j.status]?.label || j.status),
+      escape(j.recruiterScore ?? ""), escape(j.hmScore ?? ""),
+      escape(fmtDate(j.dateAdded) || ""), escape(fmtDate(j.dateApplied) || ""),
+      escape(fmtDate(j.dateScreen) || ""), escape(fmtDate(j.dateInterview) || ""),
+      escape(fmtDate(j.dateOffer) || ""), escape(fmtDate(j.dateRejected) || ""),
+      escape(j.url), escape(j.notes),
+    ].join(","));
+    const header = cols.map(c => `"${c}"`).join(",");
+    const dl = (rows, name) => {
+      const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
+    };
+    const date = new Date().toISOString().slice(0, 10);
+    dl(toRows(activeJobs), `inflow-active-${date}.csv`);
+    if (rejectedJobs.length) setTimeout(() => dl(toRows(rejectedJobs), `inflow-rejected-${date}.csv`), 300);
   };
 
   const cardSub = (job) => {
@@ -726,15 +827,20 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
           <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 12px" }}>Pipeline</p>
           <h1 style={{ fontFamily: T.display, fontSize: "clamp(26px,4vw,38px)", color: C.text, fontWeight: 800, letterSpacing: "-0.03em" }}>Application Tracker</h1>
         </div>
-        <Btn onClick={() => setShowAdd(true)} small>+ Add Job</Btn>
+        <div style={{ display: "flex", gap: "8px" }}>
+          {jobs.length > 0 && (
+            <Btn onClick={exportCSV} variant="ghost" small>↓ Export CSV</Btn>
+          )}
+          <Btn onClick={() => setShowAdd(true)} small>+ Add Job</Btn>
+        </div>
       </div>
 
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "12px", marginBottom: "32px" }}>
         {[
-          { l: "Total",       v: stats.total,   c: C.textMid  },
+          { l: "Active",      v: stats.total,   c: C.textMid  },
           { l: "Applied",     v: stats.applied, c: C.accent   },
-          { l: "Active",      v: stats.active,  c: C.yellow   },
+          { l: "In Progress", v: stats.active,  c: C.yellow   },
           { l: "Offers",      v: stats.offers,  c: C.mint     },
         ].map(({ l, v, c }) => (
           <div key={l} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "18px 20px" }}>
@@ -745,11 +851,11 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
       </div>
 
       {/* Filters */}
-      <div style={{ display: "flex", gap: "7px", marginBottom: "22px", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: "7px", marginBottom: "22px", flexWrap: "wrap", alignItems: "center" }}>
         <button onClick={() => setFilter("all")} style={{ padding: "6px 14px", borderRadius: "20px", border: `1px solid ${filter === "all" ? C.accent : C.border}`, background: filter === "all" ? "#0d1a10" : "transparent", color: filter === "all" ? C.accent : C.textSub, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer" }}>
-          All ({jobs.length})
+          Active ({activeJobs.length})
         </button>
-        {STATUSES.map(s => {
+        {STATUSES.filter(s => s.key !== "rejected").map(s => {
           const count = jobs.filter(j => j.status === s.key).length;
           return (
             <button key={s.key} onClick={() => setFilter(s.key)} style={{ padding: "6px 14px", borderRadius: "20px", border: `1px solid ${filter === s.key ? s.color : C.border}`, background: filter === s.key ? s.bg : "transparent", color: filter === s.key ? s.color : C.textSub, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer" }}>
@@ -757,6 +863,15 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
             </button>
           );
         })}
+        {/* Rejected — separated visually */}
+        {rejectedJobs.length > 0 && (
+          <>
+            <div style={{ width: "1px", height: "20px", background: C.border, flexShrink: 0 }} />
+            <button onClick={() => setFilter("rejected")} style={{ padding: "6px 14px", borderRadius: "20px", border: `1px solid ${filter === "rejected" ? C.red : C.border}`, background: filter === "rejected" ? "#1a0d0d" : "transparent", color: filter === "rejected" ? C.red : C.textDim, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer", opacity: filter === "rejected" ? 1 : 0.6 }}>
+              Rejected ({rejectedJobs.length})
+            </button>
+          </>
+        )}
       </div>
 
       {/* Job list */}
@@ -764,7 +879,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
         <div style={{ textAlign: "center", padding: "72px 20px" }}>
           <p style={{ fontFamily: T.display, fontSize: "20px", color: C.border2, fontWeight: 800, marginBottom: "10px" }}>Nothing here yet.</p>
           <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textDim, lineHeight: 1.7 }}>
-            {filter === "all" ? "Analyze a job and save it, or add one manually." : `No jobs at "${SM[filter]?.label}" stage.`}
+            {filter === "all" ? "Analyze a job and save it, or add one manually." : filter === "rejected" ? "No rejected jobs. Keep it that way." : `No jobs at "${SM[filter]?.label}" stage.`}
           </p>
         </div>
       ) : (
