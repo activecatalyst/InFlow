@@ -30,7 +30,7 @@ const T = {
 };
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
-const KEYS = { resume: "inflow_resume_v2", jobs: "inflow_jobs_v2", apiKey: "inflow_api_key", proxyUrl: "inflow_proxy_url" };
+const KEYS = { resume: "inflow_resume_v2", jobs: "inflow_jobs_v2", apiKey: "inflow_api_key", proxyUrl: "inflow_proxy_url", updatedResume: "inflow_resume_updated" };
 const store = {
   get: async (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: async (k, v) => { try { localStorage.setItem(k, v); } catch {} },
@@ -74,7 +74,47 @@ const parseScores = (text) => {
   const h = text.match(/hiring manager score[:\s*_]*(\d+(?:\.\d+)?)/i);
   return { recruiter: r ? parseFloat(r[1]) : null, hm: h ? parseFloat(h[1]) : null };
 };
-const scoreColor = (s) => !s ? C.textDim : s >= 7 ? C.accent : s >= 5 ? C.yellow : C.red;
+const scoreColor = (s) => (s === null || s === undefined) ? C.textDim : s >= 7 ? C.accent : s >= 5 ? C.yellow : C.red;
+
+const parseVerdict = (text) => {
+  const m = text.match(/## STEP 8[\s\S]*?\n([\s\S]*?)(?=\n## |$)/i)
+            || text.match(/## STEP 7[\s\S]*?\n([\s\S]*?)(?=\n## |$)/i);
+  if (!m) return null;
+  const raw = m[1].trim();
+  const bottomLine = raw.match(/Bottom line:(.*?)(?:\n|$)/i)?.[1]?.trim() || null;
+  const body = raw.replace(/Bottom line:.*$/im, '').trim();
+  return { body, bottomLine };
+};
+
+const parseNextSteps = (text) => {
+  const m = text.match(/## STEP 7[\s\S]*?\n([\s\S]*?)(?=\n## STEP 8|$)/i);
+  if (!m) return [];
+  const block = m[1];
+  const actions = [...block.matchAll(/ACTION \d+:\s*(.+)/gi)].map(a => a[1].trim());
+  return actions;
+};
+
+const parseOdds = (text) => {
+  const ats    = text.match(/ATS\s+(?:pass|check)[^%\d]*(\d+)%?/i)?.[1];
+  const screen = text.match(/(?:phone\s+)?screen[^%\d]*(\d+)%?/i)?.[1];
+  const inter  = text.match(/interview[^%\d]*(\d+)%?/i)?.[1];
+  const offer  = text.match(/offer[^%\d]*(\d+)%?/i)?.[1];
+  if (!ats && !screen) return null;
+  return [
+    { label: "ATS",       pct: parseInt(ats || 0) },
+    { label: "Screen",    pct: parseInt(screen || 0) },
+    { label: "Interview", pct: parseInt(inter || 0) },
+    { label: "Offer",     pct: parseInt(offer || 0) },
+  ];
+};
+
+const scoreLabel = (s) => {
+  if (s === null || s === undefined) return "";
+  if (s >= 8) return "Strong fit";
+  if (s >= 6) return "Viable — gaps exist";
+  if (s >= 4) return "Stretch — needs work";
+  return "Not ready for this role";
+};
 
 const stampDate = (job, newStatus) => {
   const st = SM[newStatus];
@@ -140,56 +180,20 @@ WHY: [one sentence explaining the improvement]
 
 Make these edits specific to THIS job. Focus on highest-impact changes only.
 
-## STEP 7 — HONEST VERDICT
-One paragraph. ${cfg.verdictStyle}
+## STEP 7 — NEXT STEPS
+List exactly 4 concrete, ordered actions the candidate should take before submitting this application. Format as:
+ACTION 1: [specific action — be concrete, not generic]
+ACTION 2: [specific action]
+ACTION 3: [specific action]
+ACTION 4: [specific action]
+
+## STEP 8 — HONEST VERDICT
+One paragraph. ${cfg.verdictStyle} End with one sentence starting with "Bottom line:"
 
 Candidate Resume:
 ${resume}`;
 };
 
-const ANALYSIS_PROMPT_OLD = (resume) => `You are a brutally honest senior corporate recruiter and hiring manager with 15+ years of experience. No fluff, no sugarcoating, no generic advice.
-
-You have the candidate's resume below. When given a job posting URL or text:
-1. If a URL, use web search to fetch the full posting. Confirm the role and company you found.
-2. Run this exact analysis. Use ## headers for each step exactly as shown — do not use bold markers or any other format for step headers:
-
-## STEP 1 — RECRUITER EVALUATION
-- Recruiter Score (1–10) with one-line verdict
-- Top 3 Strengths (specific to this role)
-- Top 3 Gaps (direct, no softening)
-- How a recruiter reads this background in 2–3 sentences
-- Interview odds: ATS pass / Phone Screen / Interview / Offer (% + one-line reasoning each)
-
-## STEP 2 — HIRING MANAGER VIEW
-- Hiring Manager Score (1–10) with one-line verdict
-- What will resonate (specific to this role and company)
-- What will concern them (be direct)
-- The one question they will definitely ask
-
-## STEP 3 — RESUME OPTIMIZATION
-Rewrite the professional summary specifically for this role. Then rewrite the 3 most impactful experience bullets. Strong verbs, specific outcomes, natural ATS keyword integration. Human — not robotic.
-
-## STEP 4 — ATS KEYWORDS
-10 specific phrases from this job description the candidate must mirror in their resume and interviews.
-
-## STEP 5 — INTERVIEW PREP
-3 questions this interviewer will almost certainly ask. For each: one paragraph coaching note based on the candidate's actual background. Specific — no generic STAR method advice.
-
-## STEP 6 — RESUME EDIT SUGGESTIONS
-Provide exactly 5 specific, actionable edits to the candidate's existing resume — formatted like this:
-
-EDIT [number]:
-ORIGINAL: [exact text from their resume]
-SUGGESTED: [your rewrite]
-WHY: [one sentence explaining the improvement]
-
-Make these edits specific to THIS job. Focus on highest-impact changes only.
-
-## STEP 7 — HONEST VERDICT
-One paragraph. Should they apply? What is their real probability of an offer? Single most important action before submitting. No hedging.
-
-Candidate Resume:
-${resume}`;
 
 // ─── GLOBAL STYLES ────────────────────────────────────────────────────────────
 const GLOBAL_CSS = `
@@ -267,7 +271,8 @@ const STEP_LABELS = {
   "STEP 4": "ATS Keywords",
   "STEP 5": "Interview Prep",
   "STEP 6": "Resume Edit Suggestions",
-  "STEP 7": "Honest Verdict",
+  "STEP 7": "Next Steps",
+  "STEP 8": "Honest Verdict",
 };
 
 function StepAccordion({ text }) {
@@ -573,10 +578,10 @@ function Onboarding({ onComplete }) {
 }
 
 // ─── EDIT CARD ────────────────────────────────────────────────────────────────
-function EditCard({ edit, index }) {
+function EditCard({ edit, index, isLast = false }) {
   const [open, setOpen] = useState(false);
   return (
-    <div style={{ borderBottom: `1px solid ${C.border}` }}>
+    <div style={{ borderBottom: isLast ? "none" : `1px solid ${C.border}` }}>
       <button onClick={() => setOpen(!open)} style={{ width: "100%", padding: "12px 22px", background: "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
           <span style={{ fontFamily: T.mono, fontSize: "9px", color: open ? C.accent : C.textDim, letterSpacing: "0.1em", flexShrink: 0 }}>EDIT {index + 1}</span>
@@ -623,18 +628,26 @@ function AnalyzerPage({ resume, onSaveJob }) {
   const [savedToast, setSavedToast] = useState(false);
   const [tone, setTone] = useState("brutal");
   const [edits, setEdits] = useState([]);
+  const [nextSteps, setNextSteps] = useState([]);
+  const [verdict, setVerdict] = useState(null);
+  const [odds, setOdds] = useState(null);
+  const [showFullAnalysis, setShowFullAnalysis] = useState(false);
+  const [activeEdit, setActiveEdit] = useState(0);
   const resultRef = useRef(null);
+  const savedRef  = useRef(false); // prevents duplicate pipeline entries on tone re-run
 
   const analyze = async (overrideTone) => {
     const activeTone = overrideTone || tone;
+    // Guard checks BEFORE any state changes
     if (!input.trim()) return;
+    const apiKey = localStorage.getItem(KEYS.apiKey);
+    const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
+    if (!apiKey) { setError("No API key found. Go to Settings and add your Anthropic API key."); return; }
+    savedRef.current = false; // reset save guard for new analysis
     setLoading(true); setResult(""); setScores({ recruiter: null, hm: null });
     setPhase("loading"); setPhaseIdx(0); setError("");
     const interval = setInterval(() => setPhaseIdx(p => (p + 1) % PHASES.length), 1800);
     try {
-      const apiKey = localStorage.getItem(KEYS.apiKey);
-      const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
-      if (!apiKey) { setError("No API key found. Go to Settings and add your Anthropic API key."); clearInterval(interval); setPhase("idle"); setLoading(false); return; }
       const userMsg = isUrl(input)
         ? `Fetch and analyze this job posting URL: ${input.trim()}`
         : `Analyze this job posting:\n\n${input}`;
@@ -659,7 +672,9 @@ function AnalyzerPage({ resume, onSaveJob }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
       clearInterval(interval);
-      setResult(text); setScores(parseScores(text)); setPhase("done");
+      // Parse scores once, reuse everywhere
+      const parsed = parseScores(text);
+      setResult(text); setScores(parsed); setPhase("done");
       // Parse resume edits for prominent display
       const editsRaw = [...text.matchAll(/EDIT \d+:[\s\S]*?(?=EDIT \d+:|## STEP 7|$)/g)].map(m => {
         const block = m[0];
@@ -669,16 +684,25 @@ function AnalyzerPage({ resume, onSaveJob }) {
         return orig && sugg ? { orig, sugg, why } : null;
       }).filter(Boolean);
       setEdits(editsRaw);
-      const tm = text.match(/(?:role|position)[:\s]+([^\n.]{5,60})/i);
-      const cm = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/);
-      if (tm) setJobTitle(tm[1].trim().slice(0, 60));
-      if (cm) setCompany(cm[1].trim().slice(0, 40));
-      // Auto-add to pipeline
-      const autoTitle = text.match(/(?:role|position|job)[:\s]+([^\n.]{5,60})/i)?.[1]?.trim().slice(0, 60) || "Untitled Role";
-      const autoCompany = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/)?.[1]?.trim().slice(0, 40) || "Unknown Company";
-      const t2 = now();
-      onSaveJob({ id: uid(), title: autoTitle, company: autoCompany, url: isUrl(input) ? input.trim() : "", status: "saved", recruiterScore: parseScores(text).recruiter, hmScore: parseScores(text).hm, notes: "", analysis: text, dateAdded: t2, dateSaved: t2, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
-      setSavedToast(true); setTimeout(() => setSavedToast(false), 3000);
+      setNextSteps(parseNextSteps(text));
+      setVerdict(parseVerdict(text));
+      setOdds(parseOdds(text));
+      setShowFullAnalysis(false);
+      setActiveEdit(0);
+      // Extract title and company once
+      const titleMatch = text.match(/(?:role|position|job)[:\s]+([^\n.]{5,60})/i);
+      const compMatch  = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/);
+      const autoTitle   = titleMatch?.[1]?.trim().slice(0, 60) || "Untitled Role";
+      const autoCompany = compMatch?.[1]?.trim().slice(0, 40)  || "Unknown Company";
+      setJobTitle(autoTitle);
+      setCompany(autoCompany);
+      // Auto-add to pipeline — only if not already saved for this input
+      if (!savedRef.current) {
+        savedRef.current = true;
+        const t2 = now();
+        onSaveJob({ id: uid(), title: autoTitle, company: autoCompany, url: isUrl(input) ? input.trim() : "", status: "saved", recruiterScore: parsed.recruiter, hmScore: parsed.hm, notes: "", analysis: text, dateAdded: t2, dateSaved: t2, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
+        setSavedToast(true); setTimeout(() => setSavedToast(false), 3000);
+      }
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
     } catch (err) {
       clearInterval(interval);
@@ -689,27 +713,23 @@ function AnalyzerPage({ resume, onSaveJob }) {
     setLoading(false);
   };
 
-  const handleSave = () => {
-    const t = now();
-    onSaveJob({ id: uid(), title: jobTitle || "Untitled Role", company: company || "Unknown Company", url: isUrl(input) ? input.trim() : "", status: "saved", recruiterScore: scores.recruiter, hmScore: scores.hm, notes: "", analysis: result, dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
-    setSavedToast(true); setTimeout(() => setSavedToast(false), 2500);
-  };
-
-  const reset = () => { setInput(""); setResult(""); setScores({ recruiter: null, hm: null }); setPhase("idle"); setError(""); setJobTitle(""); setCompany(""); setEdits([]); };
+  const reset = () => { setInput(""); setResult(""); setScores({ recruiter: null, hm: null }); setPhase("idle"); setError(""); setJobTitle(""); setCompany(""); setEdits([]); setNextSteps([]); setVerdict(null); setOdds(null); setShowFullAnalysis(false); setActiveEdit(0); };
 
   return (
     <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
-      <div style={{ marginBottom: "44px" }}>
-        <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 16px" }}>
+      {phase === "idle" && (
+      <div style={{ marginBottom: "32px" }}>
+        <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 14px" }}>
           Analyzer · Resume Active
         </p>
-        <h1 style={{ fontFamily: T.display, fontSize: "clamp(30px,5vw,44px)", color: C.text, fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.03em", margin: "0 0 14px" }}>
+        <h1 style={{ fontFamily: T.display, fontSize: "clamp(28px,5vw,40px)", color: C.text, fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.03em", margin: "0 0 12px" }}>
           Drop a job.<br /><span style={{ color: C.accent }}>Get the truth.</span>
         </h1>
-        <p style={{ fontFamily: T.body, fontSize: "16px", color: C.textMid, lineHeight: 1.8, margin: 0 }}>
-          Paste a URL or full job description. Get scored, rewritten bullets, specific resume edits, interview prep, and an honest verdict.
+        <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: 0 }}>
+          Paste a job URL or description. Get scored, specific resume edits, a clear next steps list, and an honest verdict.
         </p>
       </div>
+      )}
 
       {phase !== "done" && (
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", overflow: "hidden", marginBottom: "16px" }}>
@@ -753,76 +773,182 @@ function AnalyzerPage({ resume, onSaveJob }) {
         </div>
       )}
 
-      {/* Results */}
+      {/* Results — Chat Style */}
       {phase === "done" && result && (
-        <div ref={resultRef}>
+        <div ref={resultRef} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
 
-          {/* Tone Selector */}
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "16px 20px", marginBottom: "16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
-            <div>
-              <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Analysis Tone</p>
-              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: 0 }}>Switch tone and re-analyze instantly</p>
-            </div>
-            <div style={{ display: "flex", gap: "8px" }}>
-              {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
-                <button key={key} onClick={() => { setTone(key); analyze(key); }} style={{
-                  padding: "8px 18px", borderRadius: "8px", border: `1px solid ${tone === key ? C.accent : C.border2}`,
-                  background: tone === key ? "#0d1a10" : "transparent",
-                  color: tone === key ? C.accent : C.textDim,
-                  fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em",
-                  cursor: "pointer", display: "flex", alignItems: "center", gap: "6px",
-                  fontWeight: tone === key ? 600 : 400,
-                }}>
-                  <span style={{ fontSize: "13px" }}>{cfg.icon}</span> {cfg.label}
-                </button>
-              ))}
+          {/* ── USER BUBBLE ── */}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "18px 18px 4px 18px", padding: "12px 18px", maxWidth: "80%" }}>
+              <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.textSub, margin: 0, wordBreak: "break-all", lineHeight: 1.5 }}>{input.trim().slice(0, 120)}{input.trim().length > 120 ? "..." : ""}</p>
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: "14px", marginBottom: "16px" }}>
-            <ScoreCard label="Recruiter Score" score={scores.recruiter} />
-            <ScoreCard label="Hiring Manager Score" score={scores.hm} />
-          </div>
+          {/* ── INFLOW BUBBLE 1: VERDICT + SCORES ── */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.surface, border: `1px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
+              <svg width="14" height="14" viewBox="0 0 48 48"><circle cx="24" cy="13" r="4.5" fill={C.accent}/><path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/></svg>
+            </div>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px" }}>
 
-          {/* Resume Edits — Collapsible */}
-          {edits.length > 0 && (
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", overflow: "hidden", marginBottom: "16px" }}>
-              {/* Header — always visible */}
-              <div style={{ padding: "16px 22px", display: "flex", alignItems: "center", gap: "10px" }}>
-                <div style={{ width: "3px", height: "14px", background: C.accent, borderRadius: "2px" }} />
-                <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.16em", textTransform: "uppercase", margin: 0 }}>Resume Edit Suggestions</p>
-                <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, marginLeft: "auto" }}>{edits.length} edits · tap to expand</span>
-              </div>
-              {/* Individual collapsible edits */}
-              <div style={{ borderTop: `1px solid ${C.border}`, display: "flex", flexDirection: "column" }}>
-                {edits.map((edit, i) => (
-                  <EditCard key={i} edit={edit} index={i} />
+              {/* Score row */}
+              <div style={{ display: "flex", gap: "10px" }}>
+                {[{ label: "Recruiter", score: scores.recruiter }, { label: "Hiring Mgr", score: scores.hm }].map(({ label, score }) => (
+                  <div key={label} style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "14px 16px" }}>
+                    <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px" }}>{label}</p>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "6px", marginBottom: "8px" }}>
+                      <span style={{ fontFamily: T.display, fontSize: "36px", color: scoreColor(score), fontWeight: 800, lineHeight: 1 }}>{score ?? "—"}</span>
+                      <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>/10</span>
+                    </div>
+                    <div style={{ height: "3px", background: C.border2, borderRadius: "2px", marginBottom: "8px" }}>
+                      {score && <div style={{ height: "100%", width: `${score * 10}%`, background: scoreColor(score), borderRadius: "2px" }} />}
+                    </div>
+                    <p style={{ fontFamily: T.body, fontSize: "12px", color: scoreColor(score), margin: 0 }}>{scoreLabel(score)}</p>
+                  </div>
                 ))}
+              </div>
+
+              {/* Odds funnel */}
+              {odds && (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "14px 18px" }}>
+                  <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px" }}>Interview Odds</p>
+                  <div style={{ display: "flex", gap: "6px", alignItems: "flex-end" }}>
+                    {odds.map(({ label, pct }) => (
+                      <div key={label} style={{ flex: 1, textAlign: "center" }}>
+                        <div style={{ height: "48px", background: C.surface2, borderRadius: "6px", display: "flex", alignItems: "flex-end", overflow: "hidden", marginBottom: "6px" }}>
+                          <div style={{ width: "100%", height: `${Math.max(pct, 4)}%`, background: pct >= 50 ? C.accent : pct >= 20 ? C.yellow : C.red, opacity: 0.8, borderRadius: "4px 4px 0 0" }} />
+                        </div>
+                        <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, margin: "0 0 2px", letterSpacing: "0.08em" }}>{label}</p>
+                        <p style={{ fontFamily: T.mono, fontSize: "11px", color: pct >= 50 ? C.accent : pct >= 20 ? C.yellow : C.red, margin: 0, fontWeight: 600 }}>{pct}%</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Bottom line verdict */}
+              {verdict?.bottomLine && (
+                <div style={{ background: "#0d1a10", border: `1px solid ${C.accent}33`, borderRadius: "12px", padding: "14px 18px" }}>
+                  <p style={{ fontFamily: T.body, fontSize: "15px", color: C.text, margin: 0, lineHeight: 1.75 }}>
+                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.1em", marginRight: "8px" }}>BOTTOM LINE</span>
+                    {verdict.bottomLine}
+                  </p>
+                </div>
+              )}
+
+              {/* Tone toggle */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.1em" }}>TONE</span>
+                {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
+                  <button key={key} onClick={() => { setTone(key); analyze(key); }} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0d1a10" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
+                    <span>{cfg.icon}</span> {cfg.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── INFLOW BUBBLE 2: RESUME EDITS ── */}
+          {edits.length > 0 && (
+            <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.surface, border: `1px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
+                <svg width="14" height="14" viewBox="0 0 48 48"><circle cx="24" cy="13" r="4.5" fill={C.accent}/><path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/></svg>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", overflow: "hidden" }}>
+                  {/* Edit nav header */}
+                  <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <div style={{ width: "3px", height: "12px", background: C.accent, borderRadius: "2px" }} />
+                      <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.12em", textTransform: "uppercase" }}>Resume Edits</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>{activeEdit + 1} / {edits.length}</span>
+                      <button onClick={() => setActiveEdit(a => Math.max(0, a - 1))} disabled={activeEdit === 0} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: activeEdit === 0 ? C.textDim : C.textSub, cursor: activeEdit === 0 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>←</button>
+                      <button onClick={() => setActiveEdit(a => Math.min(edits.length - 1, a + 1))} disabled={activeEdit === edits.length - 1} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: activeEdit === edits.length - 1 ? C.textDim : C.textSub, cursor: activeEdit === edits.length - 1 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>→</button>
+                    </div>
+                  </div>
+                  {/* Active edit */}
+                  {edits[activeEdit] && (
+                    <div>
+                      <div style={{ padding: "14px 18px", background: "#150a0a", borderBottom: `1px solid ${C.border}` }}>
+                        <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.red, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.8 }}>BEFORE</p>
+                        <p style={{ fontFamily: T.body, fontSize: "14px", color: "#FCA5A5", margin: 0, lineHeight: 1.7 }}>{edits[activeEdit].orig}</p>
+                      </div>
+                      <div style={{ padding: "14px 18px", background: "#0a150a", borderBottom: `1px solid ${C.border}` }}>
+                        <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.8 }}>AFTER</p>
+                        <p style={{ fontFamily: T.body, fontSize: "14px", color: C.mint, margin: 0, lineHeight: 1.7 }}>{edits[activeEdit].sugg}</p>
+                      </div>
+                      <div style={{ padding: "12px 18px", background: C.surface2, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
+                        <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.6, fontStyle: "italic", flex: 1 }}>↳ {edits[activeEdit].why || "Stronger action verb + measurable outcome"}</p>
+                        <button onClick={() => navigator.clipboard?.writeText(edits[activeEdit].sugg)} style={{ background: C.surface, border: `1px solid ${C.border2}`, borderRadius: "6px", padding: "6px 14px", fontFamily: T.mono, fontSize: "10px", color: C.accent, cursor: "pointer", letterSpacing: "0.08em", flexShrink: 0 }}>Copy ↗</button>
+                      </div>
+                    </div>
+                  )}
+                  {/* Edit dots */}
+                  <div style={{ padding: "10px 18px", display: "flex", gap: "6px", justifyContent: "center" }}>
+                    {edits.map((_, i) => (
+                      <button key={i} onClick={() => setActiveEdit(i)} style={{ width: i === activeEdit ? "18px" : "6px", height: "6px", borderRadius: "3px", background: i === activeEdit ? C.accent : C.border2, border: "none", cursor: "pointer", transition: "width 0.2s, background 0.2s", padding: 0 }} />
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}
 
-          {/* Auto-saved indicator */}
-          <div style={{ background: "#0d1a10", border: `1px solid ${C.accent}33`, borderRadius: "12px", padding: "14px 20px", marginBottom: "16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "7px", height: "7px", borderRadius: "50%", background: C.accent, boxShadow: `0 0 8px ${C.accent}` }} />
-              <div>
-                <p style={{ fontFamily: T.body, fontSize: "14px", color: C.text, margin: 0, fontWeight: 500 }}>{jobTitle || "Untitled Role"}</p>
-                <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, margin: 0, letterSpacing: "0.08em" }}>{company || "Unknown Company"} · Auto-saved to Pipeline</p>
+          {/* ── INFLOW BUBBLE 3: NEXT STEPS ── */}
+          {nextSteps.length > 0 && (
+            <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.surface, border: `1px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
+                <svg width="14" height="14" viewBox="0 0 48 48"><circle cx="24" cy="13" r="4.5" fill={C.accent}/><path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/></svg>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", padding: "16px 20px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+                    <div style={{ width: "3px", height: "12px", background: C.yellow, borderRadius: "2px" }} />
+                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.yellow, letterSpacing: "0.12em", textTransform: "uppercase" }}>Before You Apply</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    {nextSteps.map((step, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+                        <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: `1.5px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
+                          <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim }}>{i + 1}</span>
+                        </div>
+                        <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, margin: 0, lineHeight: 1.7 }}>{step}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
-            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.1em" }}>✓ SAVED</span>
+          )}
+
+          {/* ── FULL ANALYSIS TOGGLE ── */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <div style={{ width: "28px", flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <button onClick={() => setShowFullAnalysis(s => !s)} style={{ width: "100%", background: "transparent", border: `1px solid ${C.border}`, borderRadius: "10px", padding: "12px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", marginBottom: showFullAnalysis ? "10px" : "0" }}>
+                <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textSub, letterSpacing: "0.1em", textTransform: "uppercase" }}>Full Analysis (7 steps)</span>
+                <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>{showFullAnalysis ? "▲ Hide" : "▼ Show"}</span>
+              </button>
+              {showFullAnalysis && (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "28px 32px" }}>
+                  <StepAccordion text={result} />
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Analysis */}
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "32px 36px", marginBottom: "16px" }}>
-            <StepAccordion text={result} />
+          {/* ── AUTO-SAVED + ACTIONS ── */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "center", paddingLeft: "38px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#0d1a10", border: `1px solid ${C.accent}22`, borderRadius: "20px", padding: "6px 14px" }}>
+              <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: C.accent }} />
+              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em" }}>Saved to Pipeline</span>
+            </div>
+            <button onClick={reset} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>New Analysis</button>
+            <button onClick={() => navigator.clipboard?.writeText(result)} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>Copy</button>
           </div>
 
-          <div style={{ display: "flex", gap: "12px" }}>
-            <Btn onClick={reset}>← New Analysis</Btn>
-            <Btn variant="ghost" onClick={() => navigator.clipboard?.writeText(result)}>Copy Analysis</Btn>
-          </div>
         </div>
       )}
     </div>
@@ -830,7 +956,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
 }
 
 // ─── TRACKER PAGE ─────────────────────────────────────────────────────────────
-function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
+function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }) {
   const [filter, setFilter] = useState("all");
   const [expandedId, setExpandedId] = useState(null);
   const [editingNotes, setEditingNotes] = useState(null);
@@ -1015,6 +1141,8 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob }) {
                       </div>
                     </div>
 
+                    <ReScoreCard job={job} updatedResume={updatedResume} onUpdate={onUpdateJob} />
+
                     {job.url && (
                       <div style={{ marginBottom: "18px" }}>
                         <Label>Job URL</Label>
@@ -1184,17 +1312,244 @@ function UpdateToast() {
   );
 }
 
+// ─── RESCORE CARD ─────────────────────────────────────────────────────────────
+function ReScoreCard({ job, updatedResume, onUpdate }) {
+  const [scoring, setScoring] = useState(false);
+  const [error, setError] = useState("");
+
+  const hasUpdated = !!updatedResume?.trim();
+  const hasScores = job.updatedRecruiterScore != null || job.updatedHmScore != null;
+
+  const delta = (orig, updated) => {
+    if (orig == null || updated == null) return null;
+    const d = updated - orig;
+    if (d === 0) return <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>→ {updated}</span>;
+    return (
+      <span style={{ fontFamily: T.mono, fontSize: "10px", color: d > 0 ? C.accent : C.red }}>
+        {d > 0 ? `↑${d}` : `↓${Math.abs(d)}`} → {updated}
+      </span>
+    );
+  };
+
+  const runRescore = async () => {
+    const apiKey = localStorage.getItem(KEYS.apiKey);
+    const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
+    if (!apiKey) { setError("No API key. Go to Settings."); return; }
+    if (!hasUpdated) { setError("No updated resume saved. Go to the Resume tab first."); return; }
+
+    setScoring(true); setError("");
+    try {
+      const prompt = `You are a senior recruiter. Re-score this candidate for the job below using their UPDATED resume.
+
+Return ONLY this exact format — nothing else:
+RECRUITER SCORE: [number 1-10]
+HIRING MANAGER SCORE: [number 1-10]
+CHANGE SUMMARY: [one sentence explaining the key improvement or remaining gap]
+
+ORIGINAL RECRUITER SCORE: ${job.recruiterScore ?? "unknown"}
+ORIGINAL HM SCORE: ${job.hmScore ?? "unknown"}
+
+UPDATED RESUME:
+${updatedResume}
+
+JOB CONTEXT (from original analysis):
+${job.analysis?.slice(0, 800) || "No analysis available."}`;
+
+      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, '') : "https://api.anthropic.com/v1/messages";
+      const headers = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+      if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
+
+      const res = await fetch(endpoint, {
+        method: "POST", headers,
+        body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 200, messages: [{ role: "user", content: prompt }] })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
+      const rMatch = text.match(/RECRUITER SCORE:\s*(\d+(?:\.\d+)?)/i);
+      const hMatch = text.match(/HIRING MANAGER SCORE:\s*(\d+(?:\.\d+)?)/i);
+      const sMatch = text.match(/CHANGE SUMMARY:\s*(.+)/i);
+      onUpdate({
+        ...job,
+        updatedRecruiterScore: rMatch ? parseFloat(rMatch[1]) : null,
+        updatedHmScore: hMatch ? parseFloat(hMatch[1]) : null,
+        updatedScoreSummary: sMatch ? sMatch[1].trim() : "",
+        updatedScoreDate: now(),
+      });
+    } catch (err) {
+      setError(err.message || "Re-score failed.");
+    }
+    setScoring(false);
+  };
+
+  return (
+    <div style={{ marginBottom: "18px" }}>
+      <Label>Projected Score with Updated Resume</Label>
+      {!hasUpdated ? (
+        <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px" }}>
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.6 }}>
+            No updated resume saved. Go to the <strong style={{ color: C.textSub }}>Resume</strong> tab, paste your edited resume, and save it — then come back to re-score.
+          </p>
+        </div>
+      ) : (
+        <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", overflow: "hidden" }}>
+          {hasScores ? (
+            <div style={{ padding: "14px 18px" }}>
+              <div style={{ display: "flex", gap: "24px", marginBottom: "10px" }}>
+                <div>
+                  <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Recruiter</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontFamily: T.display, fontSize: "24px", color: scoreColor(job.recruiterScore), fontWeight: 800, lineHeight: 1, opacity: 0.5 }}>{job.recruiterScore}</span>
+                    <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>→</span>
+                    <span style={{ fontFamily: T.display, fontSize: "28px", color: scoreColor(job.updatedRecruiterScore), fontWeight: 800, lineHeight: 1 }}>{job.updatedRecruiterScore}</span>
+                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: (job.updatedRecruiterScore - job.recruiterScore) > 0 ? C.accent : C.red }}>
+                      {job.updatedRecruiterScore > job.recruiterScore ? `↑${job.updatedRecruiterScore - job.recruiterScore}` : job.updatedRecruiterScore < job.recruiterScore ? `↓${job.recruiterScore - job.updatedRecruiterScore}` : "→"}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>HM Score</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontFamily: T.display, fontSize: "24px", color: scoreColor(job.hmScore), fontWeight: 800, lineHeight: 1, opacity: 0.5 }}>{job.hmScore}</span>
+                    <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>→</span>
+                    <span style={{ fontFamily: T.display, fontSize: "28px", color: scoreColor(job.updatedHmScore), fontWeight: 800, lineHeight: 1 }}>{job.updatedHmScore}</span>
+                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: (job.updatedHmScore - job.hmScore) > 0 ? C.accent : C.red }}>
+                      {job.updatedHmScore > job.hmScore ? `↑${job.updatedHmScore - job.hmScore}` : job.updatedHmScore < job.hmScore ? `↓${job.hmScore - job.updatedHmScore}` : "→"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              {job.updatedScoreSummary && (
+                <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: "0 0 12px", lineHeight: 1.6, fontStyle: "italic" }}>↳ {job.updatedScoreSummary}</p>
+              )}
+              {job.updatedScoreDate && (
+                <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, margin: "0 0 12px", letterSpacing: "0.08em" }}>Last scored {fmtDate(job.updatedScoreDate)}</p>
+              )}
+              <Btn small variant="ghost" onClick={runRescore} disabled={scoring}>{scoring ? "Scoring..." : "Re-run Score"}</Btn>
+            </div>
+          ) : (
+            <div style={{ padding: "14px 18px" }}>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: "0 0 12px", lineHeight: 1.6 }}>
+                Updated resume is saved. Run a re-score to see projected score improvements.
+              </p>
+              <Btn small onClick={runRescore} disabled={scoring}>{scoring ? "Scoring..." : "⚡ Run Re-Score"}</Btn>
+            </div>
+          )}
+          {error && <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.red, margin: "0 18px 14px", letterSpacing: "0.06em" }}>⚠ {error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── RESUME PAGE ──────────────────────────────────────────────────────────────
+function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }) {
+  const [activeTab, setActiveTab] = useState("updated");
+  const [baseDraft, setBaseDraft] = useState(baseResume || "");
+  const [updatedDraft, setUpdatedDraft] = useState(updatedResume || "");
+  const [baseSaved, setBaseSaved] = useState(false);
+  const [updatedSaved, setUpdatedSaved] = useState(false);
+
+  const saveBase = async () => {
+    if (baseDraft.trim().length < 100) return;
+    await store.set(KEYS.resume, baseDraft.trim());
+    onUpdateBase(baseDraft.trim());
+    setBaseSaved(true); setTimeout(() => setBaseSaved(false), 2500);
+  };
+
+  const saveUpdated = async () => {
+    if (updatedDraft.trim().length < 50) return;
+    await store.set(KEYS.updatedResume, updatedDraft.trim());
+    onUpdateUpdated(updatedDraft.trim());
+    setUpdatedSaved(true); setTimeout(() => setUpdatedSaved(false), 2500);
+  };
+
+  const clearUpdated = async () => {
+    await store.set(KEYS.updatedResume, "");
+    onUpdateUpdated("");
+    setUpdatedDraft("");
+  };
+
+  return (
+    <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
+      <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 16px" }}>Resume</p>
+      <h1 style={{ fontFamily: T.display, fontSize: "clamp(26px,4vw,38px)", color: C.text, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 8px" }}>Your Resumes</h1>
+      <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "0 0 28px" }}>
+        Keep your base resume for all new analyses. Paste your edited version to re-score saved jobs and see projected score improvements.
+      </p>
+
+      {/* Tab switcher */}
+      <div style={{ display: "flex", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "4px", gap: "4px", marginBottom: "24px", width: "fit-content" }}>
+        {[
+          { key: "updated", label: "Updated Resume", badge: updatedResume?.trim() ? "✓" : null },
+          { key: "base", label: "Base Resume" },
+        ].map(({ key, label, badge }) => (
+          <button key={key} onClick={() => setActiveTab(key)} style={{ padding: "8px 20px", borderRadius: "7px", border: "none", background: activeTab === key ? C.surface2 : "transparent", color: activeTab === key ? C.text : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}>
+            {label}
+            {badge && <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent }}>{badge}</span>}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "updated" && (
+        <div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "24px 28px", marginBottom: "18px" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px", gap: "12px" }}>
+              <div>
+                <Label color={C.accent}>Updated Resume</Label>
+                <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, margin: 0, lineHeight: 1.7 }}>
+                  Paste your resume after making the suggested edits. Used only for re-scoring saved jobs in your Pipeline — doesn't affect new analyses.
+                </p>
+              </div>
+              {updatedResume?.trim() && (
+                <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: "6px", background: "#0d1a10", border: `1px solid ${C.accent}33`, borderRadius: "6px", padding: "4px 10px" }}>
+                  <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: C.accent }} />
+                  <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em" }}>SAVED</span>
+                </div>
+              )}
+            </div>
+            <Field value={updatedDraft} onChange={setUpdatedDraft} placeholder="Paste your updated resume here — the version you've edited based on the suggestions..." multiline rows={18} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <Btn onClick={saveUpdated} disabled={updatedDraft.trim().length < 50}>{updatedSaved ? "✓ Saved" : "Save Updated Resume"}</Btn>
+            {updatedResume?.trim() && <Btn variant="ghost" small onClick={clearUpdated}>Clear</Btn>}
+            <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>{updatedDraft.trim().length} chars</span>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "base" && (
+        <div>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "24px 28px", marginBottom: "18px" }}>
+            <Label>Base Resume</Label>
+            <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, lineHeight: 1.8, margin: "0 0 18px" }}>
+              This is the resume used for all new job analyses. Update it here when you make permanent changes to your resume.
+            </p>
+            <Field value={baseDraft} onChange={setBaseDraft} placeholder="Your base resume..." multiline rows={20} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+            <Btn onClick={saveBase} disabled={baseDraft.trim().length < 100}>{baseSaved ? "✓ Saved" : "Save Base Resume"}</Btn>
+            <span style={{ fontFamily: T.mono, fontSize: "11px", color: baseDraft.trim().length >= 100 ? C.accent : C.textDim }}>{baseDraft.trim().length} chars</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const [ready, setReady]   = useState(false);
   const [resume, setResume] = useState(null);
+  const [updatedResume, setUpdatedResume] = useState("");
   const [jobs, setJobs]     = useState([]);
   const [page, setPage]     = useState("analyzer");
 
   useEffect(() => {
-    Promise.all([store.get(KEYS.resume), store.get(KEYS.jobs)]).then(([r, j]) => {
+    Promise.all([store.get(KEYS.resume), store.get(KEYS.jobs), store.get(KEYS.updatedResume)]).then(([r, j, u]) => {
       setResume(r || null);
       setJobs(j ? JSON.parse(j) : []);
+      setUpdatedResume(u || "");
       setReady(true);
     });
   }, []);
@@ -1205,6 +1560,7 @@ export default function App() {
   const handleDelete  = (id) => persist(jobs.filter(j => j.id !== id));
   const handleAdd     = (j) => persist([j, ...jobs]);
   const handleResume  = (r) => setResume(r);
+  const handleUpdatedResume = (r) => setUpdatedResume(r);
   const handleOnboard = (r) => { setResume(r); setPage("analyzer"); };
 
   const pending = jobs.filter(j => ["screen","interview"].includes(j.status)).length;
@@ -1224,8 +1580,9 @@ export default function App() {
   );
 
   const NAV = [
-    { key: "analyzer", label: "Analyze"  },
+    { key: "analyzer", label: "Analyze" },
     { key: "tracker",  label: `Pipeline${jobs.length > 0 ? ` (${jobs.length})` : ""}` },
+    { key: "resumes",  label: "Resume", badge: updatedResume?.trim() ? "✓" : null },
     { key: "settings", label: "Settings" },
   ];
 
@@ -1234,7 +1591,6 @@ export default function App() {
       <style>{GLOBAL_CSS}</style>
 
       <nav style={{ borderBottom: `1px solid ${C.border}`, padding: "0 28px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: `${C.bg}f0`, backdropFilter: "blur(20px)", zIndex: 50, height: "56px" }}>
-        {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <svg width="24" height="24" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
             <rect width="48" height="48" rx="10" fill={C.bg} stroke={C.border2} strokeWidth="2"/>
@@ -1244,11 +1600,11 @@ export default function App() {
           <span style={{ fontFamily: T.display, fontSize: "18px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em" }}>inflow</span>
         </div>
 
-        {/* Tabs */}
         <div style={{ display: "flex", gap: "3px" }}>
-          {NAV.map(({ key, label }) => (
-            <button key={key} onClick={() => setPage(key)} style={{ padding: "7px 18px", borderRadius: "7px", background: page === key ? C.surface : "transparent", border: `1px solid ${page === key ? C.border2 : "transparent"}`, color: page === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", position: "relative", transition: "all 0.15s" }}>
+          {NAV.map(({ key, label, badge }) => (
+            <button key={key} onClick={() => setPage(key)} style={{ padding: "7px 18px", borderRadius: "7px", background: page === key ? C.surface : "transparent", border: `1px solid ${page === key ? C.border2 : "transparent"}`, color: page === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", position: "relative", transition: "all 0.15s", display: "flex", alignItems: "center", gap: "5px" }}>
               {label}
+              {badge && <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent }}>{badge}</span>}
               {key === "tracker" && pending > 0 && (
                 <span style={{ position: "absolute", top: "-4px", right: "-4px", width: "16px", height: "16px", borderRadius: "50%", background: C.yellow, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: T.mono, fontSize: "9px", color: "#000", fontWeight: 700 }}>{pending}</span>
               )}
@@ -1256,7 +1612,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* Status indicator */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: C.accent, boxShadow: `0 0 8px ${C.accent}` }} />
           <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.08em", textTransform: "uppercase" }}>Resume Active</span>
@@ -1264,7 +1619,8 @@ export default function App() {
       </nav>
 
       {page === "analyzer" && <AnalyzerPage resume={resume} onSaveJob={handleSaveJob} />}
-      {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} />}
+      {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} updatedResume={updatedResume} />}
+      {page === "resumes"  && <ResumePage baseResume={resume} updatedResume={updatedResume} onUpdateBase={handleResume} onUpdateUpdated={handleUpdatedResume} />}
       {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} />}
       <UpdateToast />
     </div>
