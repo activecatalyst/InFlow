@@ -955,6 +955,166 @@ function AnalyzerPage({ resume, onSaveJob }) {
   );
 }
 
+// ─── EDIT JOB MODAL ───────────────────────────────────────────────────────────
+function EditJobModal({ job, onSave, onClose }) {
+  const [draft, setDraft] = useState({
+    title:   job.title   || "",
+    company: job.company || "",
+    url:     job.url     || "",
+    notes:   job.notes   || "",
+    status:  job.status  || "saved",
+  });
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState("");
+  const [rerunStatus, setRerunStatus] = useState("");
+
+  const save = () => {
+    if (!draft.title.trim()) return;
+    onSave({ ...job, ...draft, status: draft.status, ...stampDate(job, draft.status) });
+  };
+
+  const rerunAnalysis = async () => {
+    const apiKey = localStorage.getItem(KEYS.apiKey);
+    const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
+    const resume = localStorage.getItem(KEYS.resume);
+    const targetUrl = draft.url || job.url;
+    if (!apiKey) { setRerunError("No API key. Go to Settings."); return; }
+    if (!resume) { setRerunError("No resume found."); return; }
+    if (!targetUrl && !job.analysis) { setRerunError("No URL to re-analyze."); return; }
+
+    setRerunning(true); setRerunError(""); setRerunStatus("Fetching job posting...");
+
+    try {
+      const userMsg = targetUrl
+        ? `Fetch and analyze this job posting URL: ${targetUrl}`
+        : `Re-analyze this job based on the original analysis context:\n\n${job.analysis?.slice(0, 1000)}`;
+
+      const body = {
+        model: "claude-sonnet-4-5", max_tokens: 4000,
+        system: ANALYSIS_PROMPT(resume, "brutal"),
+        messages: [{ role: "user", content: userMsg }],
+      };
+      if (targetUrl) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
+
+      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, '') : "https://api.anthropic.com/v1/messages";
+      const headers = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+      if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
+
+      setRerunStatus("Analyzing...");
+      const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "";
+      const parsed = parseScores(text);
+
+      // Save updated job with fresh analysis and scores
+      onSave({
+        ...job,
+        ...draft,
+        analysis: text,
+        recruiterScore: parsed.recruiter ?? job.recruiterScore,
+        hmScore: parsed.hm ?? job.hmScore,
+        updatedRecruiterScore: null,
+        updatedHmScore: null,
+        updatedScoreSummary: "",
+      });
+    } catch (err) {
+      setRerunError(err.message || "Re-analysis failed.");
+      setRerunning(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000000ee", backdropFilter: "blur(12px)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border2}`, borderRadius: "16px", width: "100%", maxWidth: "520px", maxHeight: "90vh", overflowY: "auto" }}>
+
+        {/* Header */}
+        <div style={{ padding: "22px 28px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Label color={C.accent}>Edit Job</Label>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: C.textDim, cursor: "pointer", fontFamily: T.mono, fontSize: "16px", lineHeight: 1 }}>✕</button>
+        </div>
+
+        <div style={{ padding: "16px 28px 28px", display: "flex", flexDirection: "column", gap: "14px" }}>
+
+          {/* Title */}
+          <div>
+            <Label>Job Title</Label>
+            <Field value={draft.title} onChange={v => setDraft(p => ({ ...p, title: v }))} placeholder="Job Title *" />
+          </div>
+
+          {/* Company */}
+          <div>
+            <Label>Company</Label>
+            <Field value={draft.company} onChange={v => setDraft(p => ({ ...p, company: v }))} placeholder="Company" />
+          </div>
+
+          {/* URL */}
+          <div>
+            <Label>Job URL</Label>
+            <Field value={draft.url} onChange={v => setDraft(p => ({ ...p, url: v }))} placeholder="https://..." mono />
+          </div>
+
+          {/* Status */}
+          <div>
+            <Label>Status</Label>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {STATUSES.map(s => (
+                <button key={s.key} onClick={() => setDraft(p => ({ ...p, status: s.key }))} style={{ padding: "6px 14px", borderRadius: "18px", border: `1px solid ${draft.status === s.key ? s.color : C.border}`, background: draft.status === s.key ? s.bg : "transparent", color: draft.status === s.key ? s.color : C.textSub, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer" }}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <Label>Notes</Label>
+            <Field value={draft.notes} onChange={v => setDraft(p => ({ ...p, notes: v }))} placeholder="Notes..." multiline rows={4} />
+          </div>
+
+          {/* Re-run analysis */}
+          <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "16px 18px" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: rerunError ? "10px" : "0" }}>
+              <div>
+                <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Re-run Analysis</p>
+                <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.5 }}>
+                  {rerunning ? rerunStatus : "Fetch fresh scores and analysis using the current URL and your base resume."}
+                </p>
+              </div>
+              <Btn small onClick={rerunAnalysis} disabled={rerunning}>
+                {rerunning ? "Running..." : "⚡ Re-run"}
+              </Btn>
+            </div>
+            {rerunError && (
+              <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.red, margin: "8px 0 0", letterSpacing: "0.06em" }}>⚠ {rerunError}</p>
+            )}
+          </div>
+
+          {/* Scores preview */}
+          {(job.recruiterScore || job.hmScore) && (
+            <div style={{ display: "flex", gap: "10px" }}>
+              {[{ l: "Recruiter Score", v: job.recruiterScore }, { l: "HM Score", v: job.hmScore }].map(({ l, v }) => (
+                <div key={l} style={{ flex: 1, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "10px 14px" }}>
+                  <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase", margin: "0 0 4px" }}>{l}</p>
+                  <span style={{ fontFamily: T.display, fontSize: "22px", color: scoreColor(v), fontWeight: 800 }}>{v}</span>
+                  <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>/10</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: "12px", paddingTop: "4px" }}>
+            <Btn onClick={save} disabled={!draft.title.trim()}>Save Changes</Btn>
+            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── TRACKER PAGE ─────────────────────────────────────────────────────────────
 function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }) {
   const [filter, setFilter] = useState("all");
@@ -962,6 +1122,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
   const [editingNotes, setEditingNotes] = useState(null);
   const [notesDraft, setNotesDraft] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [editingJob, setEditingJob] = useState(null); // job being edited
   const [newJob, setNewJob] = useState({ title: "", company: "", url: "", status: "saved", notes: "" });
 
   const activeJobs = jobs.filter(j => j.status !== "rejected");
@@ -1180,9 +1341,12 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                       </div>
                     )}
 
-                    <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this job from your pipeline?")) onDeleteJob(job.id); }}>
-                      Remove
-                    </Btn>
+                    <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                      <Btn small variant="ghost" onClick={() => setEditingJob({ ...job })}>✏ Edit Job</Btn>
+                      <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this job from your pipeline?")) onDeleteJob(job.id); }}>
+                        Remove
+                      </Btn>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1211,6 +1375,15 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
             </div>
           </div>
         </div>
+      )}
+
+      {/* Edit Job Modal */}
+      {editingJob && (
+        <EditJobModal
+          job={editingJob}
+          onSave={(updated) => { onUpdateJob(updated); setEditingJob(null); }}
+          onClose={() => setEditingJob(null)}
+        />
       )}
     </div>
   );
