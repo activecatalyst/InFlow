@@ -38,7 +38,7 @@ const store = {
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const STATUSES = [
-  { key: "saved",     label: "Saved",         short: "SAVED",     color: C.blue,   bg: "#0d1520", dateKey: "dateSaved"     },
+  { key: "saved",     label: "Bookmarked",    short: "SAVED",     color: C.blue,   bg: "#0d1520", dateKey: "dateSaved"     },
   { key: "applied",   label: "Applied",       short: "APPLIED",   color: C.accent, bg: "#0d1a10", dateKey: "dateApplied"   },
   { key: "screen",    label: "Phone Screen",  short: "SCREEN",    color: C.yellow, bg: "#1a1800", dateKey: "dateScreen"    },
   { key: "interview", label: "Interview",     short: "INTERVIEW", color: C.orange, bg: "#1a1000", dateKey: "dateInterview" },
@@ -615,7 +615,7 @@ function EditCard({ edit, index, isLast = false }) {
 
 // ─── ANALYZER PAGE ────────────────────────────────────────────────────────────
 function AnalyzerPage({ resume, onSaveJob }) {
-  const [mode, setMode] = useState("url");
+  const [mode, setMode] = useState("paste");
   const [input, setInput] = useState("");
   const [result, setResult] = useState("");
   const [loading, setLoading] = useState(false);
@@ -633,8 +633,10 @@ function AnalyzerPage({ resume, onSaveJob }) {
   const [odds, setOdds] = useState(null);
   const [showFullAnalysis, setShowFullAnalysis] = useState(false);
   const [activeEdit, setActiveEdit] = useState(0);
+  const [retryCountdown, setRetryCountdown] = useState(0);
   const resultRef = useRef(null);
   const savedRef  = useRef(false); // prevents duplicate pipeline entries on tone re-run
+  const retryTimer = useRef(null);
 
   const analyze = async (overrideTone) => {
     const activeTone = overrideTone || tone;
@@ -652,7 +654,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
         ? `Fetch and analyze this job posting URL: ${input.trim()}`
         : `Analyze this job posting:\n\n${input}`;
       const body = {
-        model: "claude-sonnet-4-5", max_tokens: 4000,
+        model: "claude-sonnet-4-6", max_tokens: 4000,
         system: ANALYSIS_PROMPT(resume, activeTone),
         messages: [{ role: "user", content: userMsg }],
       };
@@ -667,8 +669,12 @@ function AnalyzerPage({ resume, onSaveJob }) {
       if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
 
       const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
+      if (res.status === 503) throw new Error("__503__");
       const data = await res.json();
-      if (data.error) throw new Error(`API error: ${data.error.message || data.error.type}`);
+      if (data.error) {
+        if (data.error.type === "authentication_error" || data.error.message?.includes("auth") || data.error.message?.includes("key")) throw new Error("__authError__:" + (data.error.message || ""));
+        throw new Error(`API error: ${data.error.message || data.error.type}`);
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
       clearInterval(interval);
@@ -706,8 +712,39 @@ function AnalyzerPage({ resume, onSaveJob }) {
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
     } catch (err) {
       clearInterval(interval);
-      const msg = err.message || "Something went wrong.";
-      setError(msg.includes("fetch") ? "Network error — check your connection and try again." : msg);
+      const msg = err.message || "";
+      if (msg === "__503__") {
+        // 503: auto-retry after countdown
+        setLoading(false); setPhase("idle");
+        let secs = 10;
+        setRetryCountdown(secs);
+        setError("Anthropic API is temporarily overloaded. Retrying in...");
+        retryTimer.current = setInterval(() => {
+          secs--;
+          if (secs <= 0) {
+            clearInterval(retryTimer.current);
+            setRetryCountdown(0);
+            setError("");
+            analyze(activeTone);
+          } else {
+            setRetryCountdown(secs);
+          }
+        }, 1000);
+        return;
+      } else if (msg.startsWith("__authError__")) {
+        setError("Invalid API key — check your key in Settings. Make sure it starts with sk-ant-.");
+      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed") || msg.includes("fetch")) {
+        if (mode === "url") {
+          // CORS block from URL mode — auto-switch to paste
+          setError("This site blocks direct URL access (CORS). Switch to Paste Text and copy-paste the job description instead.");
+          setMode("paste");
+          setInput("");
+        } else {
+          setError("Network error — check your connection and try again.");
+        }
+      } else {
+        setError(msg || "Something went wrong. Please try again.");
+      }
       setPhase("idle");
     }
     setLoading(false);
@@ -726,7 +763,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
           Drop a job.<br /><span style={{ color: C.accent }}>Get the truth.</span>
         </h1>
         <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: 0 }}>
-          Paste a job URL or description. Get scored, specific resume edits, a clear next steps list, and an honest verdict.
+          Paste the job description (or try a URL — note most career sites block direct URL fetching). Get scored, specific resume edits, a clear next steps list, and an honest verdict.
         </p>
       </div>
       )}
@@ -735,8 +772,8 @@ function AnalyzerPage({ resume, onSaveJob }) {
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", overflow: "hidden", marginBottom: "16px" }}>
           {/* Tabs */}
           <div style={{ display: "flex", borderBottom: `1px solid ${C.border}` }}>
-            {[{ k: "url", label: "⌁  Job URL" }, { k: "paste", label: "≡  Paste Text" }].map(({ k, label }) => (
-              <button key={k} onClick={() => { setMode(k); setInput(""); }} style={{ flex: 1, padding: "14px", background: mode === k ? C.surface2 : "transparent", border: "none", borderBottom: `2px solid ${mode === k ? C.accent : "transparent"}`, color: mode === k ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+            {[{ k: "paste", label: "≡  Paste Text" }, { k: "url", label: "⌁  Job URL" }].map(({ k, label }) => (
+              <button key={k} onClick={() => { setMode(k); setInput(""); setError(""); }} style={{ flex: 1, padding: "14px", background: mode === k ? C.surface2 : "transparent", border: "none", borderBottom: `2px solid ${mode === k ? C.accent : "transparent"}`, color: mode === k ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
                 {label}
               </button>
             ))}
@@ -748,8 +785,11 @@ function AnalyzerPage({ resume, onSaveJob }) {
             }
           </div>
           {error && (
-            <div style={{ margin: "0 20px 20px", padding: "12px 16px", background: "#1a0d0d", border: `1px solid ${C.red}44`, borderRadius: "8px" }}>
-              <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.red, margin: 0 }}>⚠ {error}</p>
+            <div style={{ margin: "0 20px 20px", padding: "12px 16px", background: "#1a0d0d", border: `1px solid ${C.red}44`, borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+              <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.red, margin: 0, flex: 1 }}>⚠ {error}{retryCountdown > 0 ? ` ${retryCountdown}s` : ""}</p>
+              {retryCountdown > 0 && (
+                <button onClick={() => { clearInterval(retryTimer.current); setRetryCountdown(0); setError(""); }} style={{ background: "transparent", border: `1px solid ${C.red}44`, borderRadius: "5px", padding: "4px 10px", fontFamily: T.mono, fontSize: "10px", color: C.red, cursor: "pointer", flexShrink: 0, letterSpacing: "0.06em" }}>Cancel</button>
+              )}
             </div>
           )}
           <div style={{ padding: "0 20px 20px", display: "flex", justifyContent: "flex-end" }}>
@@ -947,6 +987,7 @@ function AnalyzerPage({ resume, onSaveJob }) {
             </div>
             <button onClick={reset} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>New Analysis</button>
             <button onClick={() => navigator.clipboard?.writeText(result)} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>Copy</button>
+            <button onClick={() => { const blob = new Blob([result], { type: "text/plain;charset=utf-8;" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); const fname = `inflow-${(jobTitle||"analysis").replace(/[^a-z0-9]/gi,"-").toLowerCase()}-${new Date().toISOString().slice(0,10)}.txt`; a.href=url; a.download=fname; a.click(); URL.revokeObjectURL(url); }} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>↓ Save</button>
           </div>
 
         </div>
@@ -990,7 +1031,7 @@ function EditJobModal({ job, onSave, onClose }) {
         : `Re-analyze this job based on the original analysis context:\n\n${job.analysis?.slice(0, 1000)}`;
 
       const body = {
-        model: "claude-sonnet-4-5", max_tokens: 4000,
+        model: "claude-sonnet-4-6", max_tokens: 4000,
         system: ANALYSIS_PROMPT(resume, "brutal"),
         messages: [{ role: "user", content: userMsg }],
       };
@@ -1413,7 +1454,7 @@ function SettingsPage({ resume, onUpdateResume }) {
     setKeySaved(true); setTimeout(() => setKeySaved(false), 2500);
   };
 
-  const clearKey = () => { localStorage.removeItem(KEYS.apiKey); localStorage.removeItem(KEYS.proxyUrl); setApiKey(""); setProxyUrl(""); };
+  const clearKey = () => { if (!window.confirm("Clear your saved API key and proxy URL? You'll need to re-enter them.")) return; localStorage.removeItem(KEYS.apiKey); localStorage.removeItem(KEYS.proxyUrl); setApiKey(""); setProxyUrl(""); };
 
   return (
     <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
@@ -1534,7 +1575,7 @@ ${job.analysis?.slice(0, 800) || "No analysis available."}`;
 
       const res = await fetch(endpoint, {
         method: "POST", headers,
-        body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 200, messages: [{ role: "user", content: prompt }] })
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 200, messages: [{ role: "user", content: prompt }] })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error.message);
@@ -1617,7 +1658,7 @@ ${job.analysis?.slice(0, 800) || "No analysis available."}`;
 
 // ─── RESUME PAGE ──────────────────────────────────────────────────────────────
 function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }) {
-  const [activeTab, setActiveTab] = useState("updated");
+  const [activeTab, setActiveTab] = useState("base");
   const [baseDraft, setBaseDraft] = useState(baseResume || "");
   const [updatedDraft, setUpdatedDraft] = useState(updatedResume || "");
   const [baseSaved, setBaseSaved] = useState(false);
@@ -1654,8 +1695,8 @@ function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }
       {/* Tab switcher */}
       <div style={{ display: "flex", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "4px", gap: "4px", marginBottom: "24px", width: "fit-content" }}>
         {[
-          { key: "updated", label: "Updated Resume", badge: updatedResume?.trim() ? "✓" : null },
           { key: "base", label: "Base Resume" },
+          { key: "updated", label: "Updated Resume", badge: updatedResume?.trim() ? "✓" : null },
         ].map(({ key, label, badge }) => (
           <button key={key} onClick={() => setActiveTab(key)} style={{ padding: "8px 20px", borderRadius: "7px", border: "none", background: activeTab === key ? C.surface2 : "transparent", color: activeTab === key ? C.text : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}>
             {label}
