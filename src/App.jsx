@@ -190,6 +190,9 @@ ACTION 4: [specific action]
 ## STEP 8 — HONEST VERDICT
 One paragraph. ${cfg.verdictStyle} End with one sentence starting with "Bottom line:"
 
+After Step 8, add this block on its own line — fill in exact values from the job posting, no placeholders:
+STRUCTURED_DATA: {"title":"[exact job title]","company":"[company name]","location":"[city, state]","salary":"[salary range or empty string]","jobId":"[job ID or empty string]","workArrangement":"[Remote|Hybrid|On-site|Not specified]","employmentType":"[Full-time|Part-time|Contract|Not specified]","deadline":"[application deadline as YYYY-MM-DD or empty string]","skills":["top skill 1","top skill 2","top skill 3","top skill 4","top skill 5"],"recruiterContact":"[recruiter or hiring manager name/title if found, else empty string]"}
+
 Candidate Resume:
 ${resume}`;
 };
@@ -695,18 +698,43 @@ function AnalyzerPage({ resume, onSaveJob }) {
       setOdds(parseOdds(text));
       setShowFullAnalysis(false);
       setActiveEdit(0);
-      // Extract title and company once
-      const titleMatch = text.match(/(?:role|position|job)[:\s]+([^\n.]{5,60})/i);
-      const compMatch  = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/);
-      const autoTitle   = titleMatch?.[1]?.trim().slice(0, 60) || "Untitled Role";
-      const autoCompany = compMatch?.[1]?.trim().slice(0, 40)  || "Unknown Company";
+      // Parse structured data block Claude appends after Step 8
+      let autoTitle = "Untitled Role", autoCompany = "Unknown Company";
+      let autoLocation = "", autoSalary = "", autoJobId = "";
+      let autoWorkArrangement = "", autoEmploymentType = "", autoDeadline = "";
+      let autoSkills = [], autoRecruiterContact = "";
+      const structuredMatch = text.match(/STRUCTURED_DATA:\s*(\{[\s\S]+?\})\s*$/m);
+      if (structuredMatch) {
+        try {
+          const sd = JSON.parse(structuredMatch[1]);
+          autoTitle            = sd.title?.trim()            || autoTitle;
+          autoCompany          = sd.company?.trim()          || autoCompany;
+          autoLocation         = sd.location?.trim()         || "";
+          autoSalary           = sd.salary?.trim()           || "";
+          autoJobId            = sd.jobId?.trim()            || "";
+          autoWorkArrangement  = sd.workArrangement?.trim()  || "";
+          autoEmploymentType   = sd.employmentType?.trim()   || "";
+          autoDeadline         = sd.deadline?.trim()         || "";
+          autoSkills           = Array.isArray(sd.skills) ? sd.skills.filter(Boolean).slice(0,5) : [];
+          autoRecruiterContact = sd.recruiterContact?.trim() || "";
+        } catch {}
+      }
+      if (autoTitle === "Untitled Role") {
+        // Fallback: strip markdown and try regex
+        const cleanText = text.replace(/\*\*/g, '').replace(/\*/g, '');
+        const confirmMatch = cleanText.match(/[Tt]his is\s+(?:[Jj]ob [Ii][Dd] [\w-]+ [—–-] )?(.+?) at ((?:The )?[A-Z][a-zA-Z0-9 &.,']+?)(?=\s*[(\n,]|$)/);
+        if (confirmMatch) {
+          autoTitle   = confirmMatch[1].trim().slice(0, 80);
+          autoCompany = confirmMatch[2].trim().slice(0, 40);
+        }
+      }
       setJobTitle(autoTitle);
       setCompany(autoCompany);
       // Auto-add to pipeline — only if not already saved for this input
       if (!savedRef.current) {
         savedRef.current = true;
         const t2 = now();
-        onSaveJob({ id: uid(), title: autoTitle, company: autoCompany, url: isUrl(input) ? input.trim() : "", status: "saved", recruiterScore: parsed.recruiter, hmScore: parsed.hm, notes: "", analysis: text, dateAdded: t2, dateSaved: t2, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
+        onSaveJob({ id: uid(), title: autoTitle, company: autoCompany, location: autoLocation, salary: autoSalary, jobId: autoJobId, workArrangement: autoWorkArrangement, employmentType: autoEmploymentType, deadline: autoDeadline, skills: autoSkills, recruiterContact: autoRecruiterContact, url: isUrl(input) ? input.trim() : "", status: "saved", recruiterScore: parsed.recruiter, hmScore: parsed.hm, notes: "", interviewNotes: "", followUpDate: null, analysis: text, dateAdded: t2, dateSaved: t2, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
         setSavedToast(true); setTimeout(() => setSavedToast(false), 3000);
       }
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
@@ -1174,11 +1202,13 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
     ? rejectedJobs
     : jobs.filter(j => j.status === filter);
 
+  const today = new Date();
   const stats = {
-    total:    activeJobs.length,
-    applied:  activeJobs.filter(j => ["applied","screen","interview","offer"].includes(j.status)).length,
-    active:   activeJobs.filter(j => ["screen","interview"].includes(j.status)).length,
-    offers:   activeJobs.filter(j => j.status === "offer").length,
+    total:      activeJobs.length,
+    applied:    activeJobs.filter(j => ["applied","screen","interview","offer"].includes(j.status)).length,
+    active:     activeJobs.filter(j => ["screen","interview"].includes(j.status)).length,
+    offers:     activeJobs.filter(j => j.status === "offer").length,
+    followUps:  activeJobs.filter(j => j.followUpDate && new Date(j.followUpDate) <= today).length,
   };
 
   const changeStatus = (job, s) => onUpdateJob({ ...job, status: s, ...stampDate(job, s) });
@@ -1186,7 +1216,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
   const addJob = () => {
     if (!newJob.title.trim()) return;
     const t = now();
-    onAddJob({ id: uid(), ...newJob, recruiterScore: null, hmScore: null, analysis: "", dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
+    onAddJob({ id: uid(), ...newJob, recruiterScore: null, hmScore: null, analysis: "", interviewNotes: "", followUpDate: null, skills: [], workArrangement: "", employmentType: "", deadline: "", recruiterContact: "", location: "", salary: "", jobId: "", dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
     setNewJob({ title: "", company: "", url: "", status: "saved", notes: "" });
     setShowAdd(false);
   };
@@ -1245,10 +1275,10 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "12px", marginBottom: "32px" }}>
         {[
-          { l: "Active",      v: stats.total,   c: C.textMid  },
-          { l: "Applied",     v: stats.applied, c: C.accent   },
-          { l: "In Progress", v: stats.active,  c: C.yellow   },
-          { l: "Offers",      v: stats.offers,  c: C.mint     },
+          { l: "Active",       v: stats.total,     c: C.textMid  },
+          { l: "Applied",      v: stats.applied,   c: C.accent   },
+          { l: "In Progress",  v: stats.active,    c: C.yellow   },
+          { l: "Follow-ups",   v: stats.followUps, c: stats.followUps > 0 ? C.orange : C.textMid },
         ].map(({ l, v, c }) => (
           <div key={l} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "18px 20px" }}>
             <div style={{ fontFamily: T.display, fontSize: "36px", color: c, lineHeight: 1, marginBottom: "8px", fontWeight: 800 }}>{v}</div>
@@ -1300,10 +1330,28 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                 <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: "14px" }}>
                   <Pill label={st.short} color={st.color} bg={st.bg} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: "0 0 3px", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{job.title}</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "3px", flexWrap: "wrap" }}>
+                      <p style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: 0, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{job.title}</p>
+                      {job.workArrangement && job.workArrangement !== "Not specified" && (
+                        <span style={{ fontFamily: T.mono, fontSize: "9px", color: job.workArrangement === "Remote" ? C.mint : C.yellow, background: job.workArrangement === "Remote" ? "#0a1a0d" : "#1a1800", border: `1px solid ${job.workArrangement === "Remote" ? C.mint : C.yellow}44`, borderRadius: "4px", padding: "2px 7px", letterSpacing: "0.08em", flexShrink: 0 }}>{job.workArrangement.toUpperCase()}</span>
+                      )}
+                      {job.employmentType && job.employmentType !== "Not specified" && job.employmentType !== "Full-time" && (
+                        <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.blue, background: "#0d1520", border: `1px solid ${C.blue}44`, borderRadius: "4px", padding: "2px 7px", letterSpacing: "0.08em", flexShrink: 0 }}>{job.employmentType.toUpperCase()}</span>
+                      )}
+                    </div>
                     <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.textSub, margin: 0, lineHeight: 1.4 }}>
-                      {job.company}{cardSub(job) ? `  ·  ${cardSub(job)}` : ""}
+                      {job.company}{job.location ? `  ·  ${job.location}` : ""}{cardSub(job) ? `  ·  ${cardSub(job)}` : ""}
                     </p>
+                    {(job.salary || job.deadline) && (
+                      <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, margin: "2px 0 0", lineHeight: 1.4 }}>
+                        {job.salary}{job.salary && job.deadline ? "  ·  " : ""}{job.deadline ? `Deadline: ${fmtDate(job.deadline + "T12:00:00")}` : ""}
+                      </p>
+                    )}
+                    {job.skills?.length > 0 && (
+                      <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginTop: "6px" }}>
+                        {job.skills.map((s, i) => <span key={i} style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "4px", padding: "2px 7px" }}>{s}</span>)}
+                      </div>
+                    )}
                   </div>
                   {(job.recruiterScore || job.hmScore) && (
                     <div style={{ display: "flex", gap: "12px", flexShrink: 0 }}>
@@ -1352,11 +1400,35 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                       </div>
                     )}
 
+                    {/* Follow-up date */}
+                    <div style={{ marginBottom: "18px" }}>
+                      <Label>Follow-up Date</Label>
+                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                        <input type="date" value={job.followUpDate ? job.followUpDate.slice(0,10) : ""}
+                          onChange={e => onUpdateJob({ ...job, followUpDate: e.target.value ? new Date(e.target.value + "T12:00:00").toISOString() : null })}
+                          style={{ background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "6px", padding: "7px 12px", fontSize: "13px", color: job.followUpDate ? C.text : C.textDim, fontFamily: T.mono, outline: "none", colorScheme: "dark" }} />
+                        {job.followUpDate && (() => {
+                          const daysUntil = Math.ceil((new Date(job.followUpDate) - new Date()) / 86400000);
+                          const color = daysUntil < 0 ? C.red : daysUntil <= 2 ? C.yellow : C.textDim;
+                          return <span style={{ fontFamily: T.mono, fontSize: "11px", color }}>{daysUntil < 0 ? `${Math.abs(daysUntil)}d overdue` : daysUntil === 0 ? "Today" : `in ${daysUntil}d`}</span>;
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Recruiter contact */}
+                    {job.recruiterContact && (
+                      <div style={{ marginBottom: "18px" }}>
+                        <Label>Recruiter / Contact</Label>
+                        <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, margin: 0 }}>{job.recruiterContact}</p>
+                      </div>
+                    )}
+
+                    {/* Notes */}
                     <div style={{ marginBottom: "18px" }}>
                       <Label>Notes</Label>
                       {editingNotes === job.id ? (
                         <div>
-                          <Field value={notesDraft} onChange={setNotesDraft} placeholder="Notes..." multiline rows={4} />
+                          <Field value={notesDraft} onChange={setNotesDraft} placeholder="Notes — recruiter name, what to prep, anything relevant..." multiline rows={4} />
                           <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
                             <Btn small onClick={() => { onUpdateJob({ ...job, notes: notesDraft }); setEditingNotes(null); }}>Save</Btn>
                             <Btn small variant="ghost" onClick={() => setEditingNotes(null)}>Cancel</Btn>
@@ -1365,7 +1437,27 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                       ) : (
                         <div onClick={() => { setEditingNotes(job.id); setNotesDraft(job.notes || ""); }} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px", minHeight: "52px", cursor: "text" }}>
                           <p style={{ fontFamily: T.body, fontSize: "15px", color: job.notes ? C.textMid : C.textDim, margin: 0, lineHeight: 1.75 }}>
-                            {job.notes || "Click to add notes — recruiter name, follow-up date, what was discussed..."}
+                            {job.notes || "Click to add notes..."}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Interview notes */}
+                    <div style={{ marginBottom: "18px" }}>
+                      <Label>Interview Notes</Label>
+                      {editingNotes === job.id + "_interview" ? (
+                        <div>
+                          <Field value={notesDraft} onChange={setNotesDraft} placeholder="Who you spoke to, what was discussed, questions asked, next steps..." multiline rows={5} />
+                          <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
+                            <Btn small onClick={() => { onUpdateJob({ ...job, interviewNotes: notesDraft }); setEditingNotes(null); }}>Save</Btn>
+                            <Btn small variant="ghost" onClick={() => setEditingNotes(null)}>Cancel</Btn>
+                          </div>
+                        </div>
+                      ) : (
+                        <div onClick={() => { setEditingNotes(job.id + "_interview"); setNotesDraft(job.interviewNotes || ""); }} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px", minHeight: "52px", cursor: "text" }}>
+                          <p style={{ fontFamily: T.body, fontSize: "15px", color: job.interviewNotes ? C.textMid : C.textDim, margin: 0, lineHeight: 1.75 }}>
+                            {job.interviewNotes || "Click to add interview notes..."}
                           </p>
                         </div>
                       )}
