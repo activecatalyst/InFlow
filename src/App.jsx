@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useRegisterSW } from 'virtual:pwa-register/react';
 
-// ─── DESIGN TOKENS — Graphite & Sage ─────────────────────────────────────────
+// ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 const C = {
   bg:        "#0a0b0a",
   surface:   "#131815",
@@ -30,7 +30,13 @@ const T = {
 };
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
-const KEYS = { resume: "inflow_resume_v2", jobs: "inflow_jobs_v2", apiKey: "inflow_api_key", proxyUrl: "inflow_proxy_url", updatedResume: "inflow_resume_updated" };
+const KEYS = {
+  resume:       "inflow_resume_v2",
+  jobs:         "inflow_jobs_v2",
+  apiKey:       "inflow_api_key",
+  proxyUrl:     "inflow_proxy_url",
+  updatedResume:"inflow_resume_updated",
+};
 const store = {
   get: async (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: async (k, v) => { try { localStorage.setItem(k, v); } catch {} },
@@ -38,28 +44,40 @@ const store = {
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const STATUSES = [
-  { key: "saved",     label: "Bookmarked",    short: "SAVED",     color: C.blue,   bg: "#0d1520", dateKey: "dateSaved"     },
-  { key: "applied",   label: "Applied",       short: "APPLIED",   color: C.accent, bg: "#0d1a10", dateKey: "dateApplied"   },
-  { key: "screen",    label: "Phone Screen",  short: "SCREEN",    color: C.yellow, bg: "#1a1800", dateKey: "dateScreen"    },
-  { key: "interview", label: "Interview",     short: "INTERVIEW", color: C.orange, bg: "#1a1000", dateKey: "dateInterview" },
-  { key: "offer",     label: "Offer",         short: "OFFER",     color: C.mint,   bg: "#0a1f12", dateKey: "dateOffer"     },
-  { key: "rejected",  label: "Rejected",      short: "REJECTED",  color: C.red,    bg: "#1a0d0d", dateKey: "dateRejected"  },
+  { key: "saved",     label: "Saved",        short: "SAVED",     color: C.blue,   bg: "#0d1520", dateKey: "dateSaved"     },
+  { key: "applied",   label: "Applied",      short: "APPLIED",   color: C.accent, bg: "#0d1a10", dateKey: "dateApplied"   },
+  { key: "screen",    label: "Phone Screen", short: "SCREEN",    color: C.yellow, bg: "#1a1800", dateKey: "dateScreen"    },
+  { key: "interview", label: "Interview",    short: "INTERVIEW", color: C.orange, bg: "#1a1000", dateKey: "dateInterview" },
+  { key: "offer",     label: "Offer",        short: "OFFER",     color: C.mint,   bg: "#0a1f12", dateKey: "dateOffer"     },
+  { key: "rejected",  label: "Rejected",     short: "REJECTED",  color: C.red,    bg: "#1a0d0d", dateKey: "dateRejected"  },
 ];
 const SM = Object.fromEntries(STATUSES.map(s => [s.key, s]));
 
+const TIERS = [
+  { key: "top",     label: "Top-priority application",  color: C.accent,  bg: "#0d1a10" },
+  { key: "strong",  label: "Strong apply",               color: C.mint,    bg: "#0a1f12" },
+  { key: "tailor",  label: "Apply with light tailoring", color: C.yellow,  bg: "#1a1800" },
+  { key: "stretch", label: "Realistic stretch",          color: C.orange,  bg: "#1a1000" },
+  { key: "low",     label: "Low-priority stretch",       color: C.red,     bg: "#1a0d0d" },
+  { key: "skip",    label: "Not recommended",            color: "#6b7280", bg: "#131313" },
+];
+
 const PHASES = [
-  "Fetching job posting...", "Parsing requirements...",
-  "Analyzing keyword match...", "Scoring recruiter fit...",
-  "Running hiring manager analysis...", "Rewriting resume bullets...",
-  "Generating resume edits...", "Preparing interview questions...",
+  "Fetching job posting...",
+  "Identifying what the HM is optimizing for...",
+  "Comparing resume against competencies...",
+  "Separating strengths from gaps...",
+  "Predicting recruiter reaction...",
+  "Predicting hiring manager reaction...",
+  "Rewriting resume improvements...",
+  "Assessing interview risk...",
   "Writing honest verdict...",
 ];
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
-const uid   = () => Math.random().toString(36).slice(2, 10);
-const now   = () => new Date().toISOString();
-const isUrl = (s) => /^https?:\/\/.+/.test(s?.trim());
-
+const uid     = () => Math.random().toString(36).slice(2, 10);
+const now     = () => new Date().toISOString();
+const isUrl   = (s) => /^https?:\/\/.+/.test(s?.trim());
 const fmtDate = (iso) => {
   if (!iso) return null;
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -74,46 +92,173 @@ const parseScores = (text) => {
   const h = text.match(/hiring manager score[:\s*_]*(\d+(?:\.\d+)?)/i);
   return { recruiter: r ? parseFloat(r[1]) : null, hm: h ? parseFloat(h[1]) : null };
 };
-const scoreColor = (s) => (s === null || s === undefined) ? C.textDim : s >= 7 ? C.accent : s >= 5 ? C.yellow : C.red;
 
-const parseVerdict = (text) => {
-  const m = text.match(/## STEP 8[\s\S]*?\n([\s\S]*?)(?=\n## |$)/i)
-            || text.match(/## STEP 7[\s\S]*?\n([\s\S]*?)(?=\n## |$)/i);
-  if (!m) return null;
-  const raw = m[1].trim();
-  const bottomLine = raw.match(/Bottom line:(.*?)(?:\n|$)/i)?.[1]?.trim() || null;
-  const body = raw.replace(/Bottom line:.*$/im, '').trim();
-  return { body, bottomLine };
-};
-
-const parseNextSteps = (text) => {
-  const m = text.match(/## STEP 7[\s\S]*?\n([\s\S]*?)(?=\n## STEP 8|$)/i);
-  if (!m) return [];
-  const block = m[1];
-  const actions = [...block.matchAll(/ACTION \d+:\s*(.+)/gi)].map(a => a[1].trim());
-  return actions;
-};
-
-const parseOdds = (text) => {
-  const ats    = text.match(/ATS\s+(?:pass|check)[^%\d]*(\d+)%?/i)?.[1];
-  const screen = text.match(/(?:phone\s+)?screen[^%\d]*(\d+)%?/i)?.[1];
-  const inter  = text.match(/interview[^%\d]*(\d+)%?/i)?.[1];
-  const offer  = text.match(/offer[^%\d]*(\d+)%?/i)?.[1];
-  if (!ats && !screen) return null;
-  return [
-    { label: "ATS",       pct: parseInt(ats || 0) },
-    { label: "Screen",    pct: parseInt(screen || 0) },
-    { label: "Interview", pct: parseInt(inter || 0) },
-    { label: "Offer",     pct: parseInt(offer || 0) },
-  ];
-};
+const scoreColor = (s) =>
+  s === null || s === undefined ? C.textDim : s >= 7 ? C.accent : s >= 5 ? C.yellow : C.red;
 
 const scoreLabel = (s) => {
   if (s === null || s === undefined) return "";
-  if (s >= 8) return "Strong fit";
-  if (s >= 6) return "Viable — gaps exist";
-  if (s >= 4) return "Stretch — needs work";
-  return "Not ready for this role";
+  if (s >= 8.5) return "Top-priority";
+  if (s >= 7.5) return "Strong fit";
+  if (s >= 6.5) return "Viable";
+  if (s >= 5.5) return "Stretch";
+  if (s >= 4.5) return "Low priority";
+  return "Not recommended";
+};
+
+const parseTier = (text) => {
+  const labels = TIERS.map(t => t.label);
+  for (const l of labels) {
+    if (text.includes(l)) return TIERS.find(t => t.label === l);
+  }
+  return null;
+};
+
+const tierFromScores = (recruiter, hm) => {
+  const avg = ((recruiter || 0) + (hm || 0)) / (recruiter && hm ? 2 : 1);
+  if (avg >= 8.5) return TIERS[0];
+  if (avg >= 7.5) return TIERS[1];
+  if (avg >= 6.5) return TIERS[2];
+  if (avg >= 5.5) return TIERS[3];
+  if (avg >= 4.5) return TIERS[4];
+  return TIERS[5];
+};
+
+const parseHiringDecision = (text) => {
+  const m = text.match(/## STEP 2[^\n]*\n([\s\S]*?)(?=\n## STEP 3|$)/i);
+  if (!m) return null;
+  const block = m[1].trim();
+  const verdictMatch = block.match(/Would I interview[^\n]*\n?\s*(Yes|No|Conditional)/i)
+    || block.match(/^(Yes|No|Conditional)/im);
+  const verdict     = verdictMatch?.[1] || null;
+  const concern     = block.match(/Biggest concern:\s*(.+?)(?:\n|$)/i)?.[1]?.trim() || null;
+  const selling     = block.match(/Strongest selling point:\s*(.+?)(?:\n|$)/i)?.[1]?.trim() || null;
+  const smallest    = block.match(/Smallest truthful change[^:]*:\s*(.+?)(?:\n|$)/i)?.[1]?.trim() || null;
+  const doNotChange = block.match(/What should NOT be changed:\s*(.+?)(?:\n|$)/i)?.[1]?.trim() || null;
+  const reasoning   = block
+    .replace(/Would I interview[^\n]*/i, "")
+    .replace(/^(Yes|No|Conditional)[^\n]*/im, "")
+    .replace(/Biggest concern:[^\n]*/i, "")
+    .replace(/Strongest selling point:[^\n]*/i, "")
+    .replace(/Smallest truthful change[^\n]*/i, "")
+    .replace(/What should NOT be changed:[^\n]*/i, "")
+    .trim()
+    .split("\n").filter(l => l.trim()).slice(0, 3).join(" ");
+  return { verdict, reasoning, concern, selling, smallest, doNotChange };
+};
+
+const parseStrengths = (text) => {
+  const m = text.match(/## STEP 3[^\n]*\n([\s\S]*?)(?=\n## STEP 4|$)/i);
+  if (!m) return { strengths: [], transferable: [] };
+  const block = m[1];
+
+  // Parse strengths
+  const strengths = [];
+  const strEntries = block.split(/STRENGTH \d+:/gi).slice(1);
+  for (const entry of strEntries) {
+    const name = entry.trim().split("\n")[0].trim();
+    const recruiter = entry.match(/RECRUITER READS:\s*([\s\S]*?)(?=HM READS:|STRENGTH \d|TRANSFERABLE|$)/i)?.[1]?.trim();
+    const hm = entry.match(/HM READS:\s*([\s\S]*?)(?=STRENGTH \d|TRANSFERABLE|$)/i)?.[1]?.trim();
+    if (name) strengths.push({ name, recruiter, hm });
+  }
+
+  // Parse transferable experience
+  const transferable = [];
+  const xferEntries = block.split(/TRANSFERABLE \d+:/gi).slice(1);
+  for (const entry of xferEntries) {
+    const name = entry.trim().split("\n")[0].trim();
+    const how = entry.match(/HOW IT TRANSFERS:\s*([\s\S]*?)(?=TRANSFERABLE \d|$)/i)?.[1]?.trim();
+    if (name) transferable.push({ name, how });
+  }
+
+  return { strengths, transferable };
+};
+
+const parseRisks = (text) => {
+  const m = text.match(/## STEP 4[^\n]*\n([\s\S]*?)(?=\n## STEP 5|$)/i);
+  if (!m) return [];
+  const block = m[1];
+  const risks = [];
+  const entries = block.split(/RISK \d+:/gi).slice(1);
+  for (const entry of entries) {
+    const name = entry.trim().split("\n")[0].trim();
+    const why        = entry.match(/WHY IT MATTERS:\s*([\s\S]*?)(?=LIKELIHOOD:|HIRING IMPACT:|RISK \d|$)/i)?.[1]?.trim();
+    const likelihood = entry.match(/LIKELIHOOD:\s*(Low|Medium|High)/i)?.[1]
+                    || entry.match(/HIRING IMPACT:\s*(Low|Medium|High)/i)?.[1]; // fallback
+    const mitigation = entry.match(/MITIGATION:\s*([\s\S]*?)(?=RISK \d|$)/i)?.[1]?.trim();
+    if (name) risks.push({ name, why, likelihood, mitigation });
+  }
+  return risks;
+};
+
+const parseImprovements = (text) => {
+  const m = text.match(/## STEP 5[^\n]*\n([\s\S]*?)(?=\n## STEP 6|$)/i);
+  if (!m) return [];
+  const block = m[1];
+  return [...block.matchAll(/IMPROVEMENT \d+:([\s\S]*?)(?=IMPROVEMENT \d+:|## STEP 6|$)/g)]
+    .map(match => {
+      const b = match[1];
+      const current  = b.match(/CURRENT:\s*([\s\S]*?)(?=PROBLEM:|ISSUE:|$)/i)?.[1]?.trim();
+      const problem  = b.match(/PROBLEM:\s*([\s\S]*?)(?=IMPROVED:|$)/i)?.[1]?.trim()
+                    || b.match(/ISSUE:\s*([\s\S]*?)(?=IMPROVED:|$)/i)?.[1]?.trim(); // fallback
+      const improved = b.match(/IMPROVED:\s*([\s\S]*?)(?=WHY IT WORKS:|$)/i)?.[1]?.trim();
+      const why      = b.match(/WHY IT WORKS:\s*([\s\S]*?)(?=IMPROVEMENT \d+:|$)/i)?.[1]?.trim().split("---")[0].trim();
+      return current ? { current, problem, improved, why } : null;
+    }).filter(Boolean);
+};
+
+// Fallback: parse old EDIT format
+const parseEdits = (text) => {
+  return [...text.matchAll(/EDIT \d+:([\s\S]*?)(?=EDIT \d+:|## STEP 7|## STEP 6|$)/g)]
+    .map(m => {
+      const b = m[1];
+      const orig = b.match(/ORIGINAL:\s*([\s\S]*?)(?=SUGGESTED:|$)/i)?.[1]?.trim();
+      const sugg = b.match(/SUGGESTED:\s*([\s\S]*?)(?=WHY:|$)/i)?.[1]?.trim();
+      const why  = b.match(/WHY:\s*([\s\S]*?)(?=EDIT \d+:|$)/i)?.[1]?.trim();
+      return orig && sugg ? { current: orig, improved: sugg, why, issue: "" } : null;
+    }).filter(Boolean);
+};
+
+const parseInterviewRisk = (text) => {
+  const m = text.match(/## STEP 6[^\n]*\n([\s\S]*?)(?=\n## STEP 7|$)/i);
+  if (!m) return [];
+  const block = m[1];
+  return block.split(/QUESTION \d+:/gi).slice(1).map(entry => {
+    const question = entry.trim().split("\n")[0].trim();
+    const coaching = entry.match(/COACHING:\s*([\s\S]*?)(?=QUESTION \d+:|$)/i)?.[1]?.trim();
+    return question ? { question, coaching } : null;
+  }).filter(Boolean);
+};
+
+const parseVerdict = (text) => {
+  const m = text.match(/## STEP 7[^\n]*\n([\s\S]*?)(?=\n## |$)/i)
+          || text.match(/## STEP 8[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
+  if (!m) return null;
+  const raw = m[1].trim();
+  const bottomLine = raw.match(/Bottom line:\s*(.+?)(?:\n|$)/i)?.[1]?.trim() || null;
+  const body = raw.replace(/Bottom line:.*$/im, "").trim();
+  return { body, bottomLine };
+};
+
+const parseOdds = (text) => {
+  const prob = text.match(/Interview Probability[:\s]+(\d+)%?/i)?.[1];
+  const ats  = text.match(/ATS Alignment[^%\n]*?(\d+)%/i)?.[1];
+  return prob || ats ? { probability: prob ? parseInt(prob) : null, ats: ats ? parseInt(ats) : null } : null;
+};
+
+const parseNextSteps = (text) => {
+  const m = text.match(/## STEP 7[^\n]*\n([\s\S]*?)(?=\n## STEP 8|$)/i);
+  if (!m) return [];
+  return [...m[1].matchAll(/ACTION \d+:\s*(.+)/gi)].map(a => a[1].trim());
+};
+
+const parseDecisionConfidence = (text) => {
+  const m = text.match(/## STEP 8[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
+  if (!m) return null;
+  const block = m[1].trim();
+  const level  = block.match(/Decision Confidence:\s*(High|Medium|Low)/i)?.[1] || null;
+  const reason = block.match(/Reason:\s*([\s\S]*?)(?=\n## |$)/i)?.[1]?.trim() || null;
+  return level ? { level, reason } : null;
 };
 
 const stampDate = (job, newStatus) => {
@@ -122,21 +267,21 @@ const stampDate = (job, newStatus) => {
   return { [st.dateKey]: now() };
 };
 
-// ─── ANALYSIS PROMPTS ─────────────────────────────────────────────────────────
+// ─── ANALYSIS PROMPT ──────────────────────────────────────────────────────────
 const TONE_CONFIG = {
   brutal: {
     label: "Brutal",
     icon: "⚡",
     desc: "No filter. Raw recruiter truth.",
-    persona: "You are a brutally honest senior corporate recruiter and hiring manager with 15+ years of experience. No fluff, no sugarcoating, no generic advice. Call out every gap directly. Do not soften bad news.",
-    verdictStyle: "Be completely direct about their real odds. If their chances are low, say so plainly. Don't encourage false hope.",
+    persona: "You are a brutally honest senior Fortune 500 corporate recruiter and hiring manager with 15+ years of experience. You are leaving detailed notes for a colleague who will make the final hiring call. No sugarcoating, no motivational language, no generic advice. Every statement must be directly tied to evidence in this resume or this job posting.",
+    verdictStyle: "Be completely direct about their real odds. If chances are low, say so plainly. Do not encourage false hope.",
   },
   honest: {
     label: "Honest",
     icon: "◎",
     desc: "Clear feedback with a path forward.",
-    persona: "You are an experienced senior corporate recruiter and hiring manager with 15+ years of experience. Be honest and specific, but frame feedback constructively — identify gaps clearly while also highlighting genuine strengths and actionable next steps.",
-    verdictStyle: "Be honest about their odds but focus on what they can do to improve their chances. Balance realism with actionable guidance.",
+    persona: "You are an experienced senior Fortune 500 corporate recruiter and hiring manager with 15+ years of experience. You are leaving detailed notes for a colleague who will make the final hiring call. Be honest and specific — identify gaps clearly, but frame each one with an actionable path forward. Every statement must be tied to evidence in this resume or this job posting.",
+    verdictStyle: "Be honest about their odds, but end with the single most actionable thing they can do to improve their chances.",
   },
 };
 
@@ -144,59 +289,139 @@ const ANALYSIS_PROMPT = (resume, tone = "brutal") => {
   const cfg = TONE_CONFIG[tone] || TONE_CONFIG.brutal;
   return `${cfg.persona}
 
-You have the candidate's resume below. When given a job posting URL or text:
+Write like a recruiter leaving notes for another recruiter — direct, evidence-based, concise, practical. Do NOT write like a career coach, a motivational speaker, or a generic AI assistant. Every claim must be supported by the resume, the job posting, or established hiring practices.
+
+Every recommendation must pass all four tests before including it:
+1. Truthful — directly supported by the candidate's actual experience.
+2. Recruiter-relevant — improves the first 10–15 second scan.
+3. Interview-defensible — the candidate can confidently explain it.
+4. High-impact — meaningfully improves interview odds.
+If a recommendation fails any of these tests, do not make it.
+
+Scoring calibration: A 9–10 represents exceptional alignment with this specific role and applicant pool — not simply meeting the job requirements. Most qualified candidates should score 6–7. Reserve 8+ for candidates who stand out against competitive peers.
+
+When given a job posting URL or description:
 1. If a URL, use web search to fetch the full posting. Confirm the role and company you found.
-2. Run this exact analysis. Use ## headers for each step exactly as shown — do not use bold markers or any other format for step headers:
+2. Identify what the hiring manager is ACTUALLY optimizing for — not just the job description bullet points. What problem are they trying to solve?
+3. Run this exact analysis. Use ## headers for each step exactly as shown:
 
-## STEP 1 — RECRUITER EVALUATION
-- Recruiter Score (1–10) with one-line verdict
-- Top 3 Strengths (specific to this role)
-- Top 3 Gaps (${tone === "brutal" ? "direct, no softening" : "clear but constructive"})
-- How a recruiter reads this background in 2–3 sentences
-- Interview odds: ATS pass / Phone Screen / Interview / Offer (% + one-line reasoning each)
+## STEP 1 — EXECUTIVE SUMMARY
+- Recruiter Score: [X]/10 — [one-line verdict, recruiter perspective]
+- Hiring Manager Score: [X]/10 — [one-line verdict, HM perspective]
+- ATS Alignment: [High / Medium / Low] — approximately [X]% keyword match
+- Interview Probability: [X]%
+- Overall Recommendation: [choose exactly one: Top-priority application | Strong apply | Apply with light tailoring | Realistic stretch | Low-priority stretch | Not recommended]
 
-## STEP 2 — HIRING MANAGER VIEW
-- Hiring Manager Score (1–10) with one-line verdict
-- What will resonate (specific to this role and company)
-- What will concern them
-- The one question they will definitely ask
+## STEP 2 — HIRING DECISION
+Would I interview this candidate? [Yes / No / Conditional]
 
-## STEP 3 — RESUME OPTIMIZATION
-Rewrite the professional summary specifically for this role. Then rewrite the 3 most impactful experience bullets. Strong verbs, specific outcomes, natural ATS keyword integration. Human — not robotic.
+[2–3 sentences in plain recruiter language: Would you send this resume to the HM today? What is the single biggest concern stopping you? What is the strongest piece of evidence in their favor?]
 
-## STEP 4 — ATS KEYWORDS
-10 specific phrases from this job description the candidate must mirror in their resume and interviews.
+Biggest concern: [one sentence — the one thing that could kill this application]
+Strongest selling point: [one sentence — the one thing that makes this candidate stand out]
+Smallest truthful change that increases interview probability: [one specific, actionable edit]
+What should NOT be changed: [one sentence — identify what is already working and should be left alone]
 
-## STEP 5 — INTERVIEW PREP
-3 questions this interviewer will almost certainly ask. For each: one paragraph coaching note based on the candidate's actual background. Specific — no generic STAR method advice.
+## STEP 3 — STRENGTHS AND TRANSFERABLE EXPERIENCE
+Separate exactly what is working on this resume into two categories:
 
-## STEP 6 — RESUME EDIT SUGGESTIONS
-Provide exactly 5 specific, actionable edits to the candidate's existing resume — formatted exactly like this for each edit:
+STRENGTHS (direct match — 3 items):
+STRENGTH 1: [name it — be specific, not generic]
+RECRUITER READS: [how a recruiter interprets this — why it passes the screen, 1–2 sentences]
+HM READS: [how the hiring manager interprets this — why it resonates, 1–2 sentences]
 
-EDIT [number]:
-ORIGINAL: [exact text from their resume]
-SUGGESTED: [your rewrite]
-WHY: [one sentence explaining the improvement]
+STRENGTH 2: [name it]
+RECRUITER READS: [recruiter perspective]
+HM READS: [HM perspective]
 
-Make these edits specific to THIS job. Focus on highest-impact changes only.
+STRENGTH 3: [name it]
+RECRUITER READS: [recruiter perspective]
+HM READS: [HM perspective]
 
-## STEP 7 — NEXT STEPS
-List exactly 4 concrete, ordered actions the candidate should take before submitting this application. Format as:
-ACTION 1: [specific action — be concrete, not generic]
-ACTION 2: [specific action]
-ACTION 3: [specific action]
-ACTION 4: [specific action]
+TRANSFERABLE EXPERIENCE (adjacent — list up to 2 if present, skip section if none):
+TRANSFERABLE 1: [name the experience]
+HOW IT TRANSFERS: [one sentence — specifically how this experience maps to a requirement in this role]
 
-## STEP 8 — HONEST VERDICT
-One paragraph. ${cfg.verdictStyle} End with one sentence starting with "Bottom line:"
+TRANSFERABLE 2: [name the experience — only include if genuinely applicable]
+HOW IT TRANSFERS: [one sentence]
 
-After Step 8, add this block on its own line — fill in exact values from the job posting, no placeholders:
-STRUCTURED_DATA: {"title":"[exact job title]","company":"[company name]","location":"[city, state]","salary":"[salary range or empty string]","jobId":"[job ID or empty string]","workArrangement":"[Remote|Hybrid|On-site|Not specified]","employmentType":"[Full-time|Part-time|Contract|Not specified]","deadline":"[application deadline as YYYY-MM-DD or empty string]","skills":["top skill 1","top skill 2","top skill 3","top skill 4","top skill 5"],"recruiterContact":"[recruiter or hiring manager name/title if found, else empty string]"}
+## STEP 4 — HIRING RISKS
+List exactly 3 hiring risks — gaps between what this role needs and what this resume shows. For each:
 
+RISK 1: [name the gap — be specific]
+WHY IT MATTERS: [one sentence — tie directly to a stated or implied job requirement]
+LIKELIHOOD: [Low / Medium / High — how likely is this gap to affect the hiring decision]
+MITIGATION: [one sentence — what this candidate can realistically do to address this before or during the interview]
+
+RISK 2: [name the gap]
+WHY IT MATTERS: [why it matters]
+LIKELIHOOD: [likelihood level]
+MITIGATION: [mitigation]
+
+RISK 3: [name the gap]
+WHY IT MATTERS: [why it matters]
+LIKELIHOOD: [likelihood level]
+MITIGATION: [mitigation]
+
+## STEP 5 — RESUME IMPROVEMENTS
+Exactly 5 specific, high-impact edits. Only recommend changes the candidate can genuinely defend in an interview. Do not invent experience. Optimize for clarity, recruiter readability, and ATS alignment — in that order. Format each exactly like this:
+
+IMPROVEMENT 1:
+CURRENT: [exact text from their resume — or "Missing — not present on resume" if absent]
+PROBLEM: [what is wrong or weak — be specific, no generic advice]
+IMPROVED: [your rewrite — strong verb, specific outcome, natural keyword integration]
+WHY IT WORKS: [one sentence — tied to this specific role, not general resume advice]
+
+IMPROVEMENT 2:
+CURRENT: [current text or "Missing"]
+PROBLEM: [the problem]
+IMPROVED: [rewrite]
+WHY IT WORKS: [why it matters for this role]
+
+IMPROVEMENT 3:
+CURRENT: [current text or "Missing"]
+PROBLEM: [the problem]
+IMPROVED: [rewrite]
+WHY IT WORKS: [why]
+
+IMPROVEMENT 4:
+CURRENT: [current text or "Missing"]
+PROBLEM: [the problem]
+IMPROVED: [rewrite]
+WHY IT WORKS: [why]
+
+IMPROVEMENT 5:
+CURRENT: [current text or "Missing"]
+PROBLEM: [the problem]
+IMPROVED: [rewrite]
+WHY IT WORKS: [why]
+
+## STEP 6 — INTERVIEW RISK
+The 3 questions this interviewer will almost certainly ask — based on the gaps and signals in this specific resume. For each:
+
+QUESTION 1: [the actual question — phrased exactly as the interviewer would ask it]
+COACHING: [one paragraph of specific coaching based on what is in this candidate's actual background — do not give generic STAR method advice, give specific talking points from their resume]
+
+QUESTION 2: [question]
+COACHING: [coaching]
+
+QUESTION 3: [question]
+COACHING: [coaching]
+
+## STEP 7 — HONEST VERDICT
+One paragraph. ${cfg.verdictStyle} What is the realistic outcome if this candidate applies today, without changes?
+
+Bottom line: [repeat the Overall Recommendation tier] — [one sentence that captures the clearest, most honest truth about this application]
+
+## STEP 8 — DECISION CONFIDENCE
+Decision Confidence: [High / Medium / Low]
+
+Reason: [2–3 sentences explaining why you are or are not confident in this assessment. High = the strongest and weakest aspects are clear and the recommendation is unlikely to change without new experience. Medium = one or two factors could shift the verdict if clarified. Low = significant unknowns exist that would materially change the recommendation.]
+
+---
 Candidate Resume:
 ${resume}`;
 };
-
 
 // ─── GLOBAL STYLES ────────────────────────────────────────────────────────────
 const GLOBAL_CSS = `
@@ -214,7 +439,6 @@ const GLOBAL_CSS = `
 `;
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
-
 const Label = ({ children, color }) => (
   <p style={{ fontFamily: T.mono, fontSize: "11px", color: color || C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 10px", lineHeight: 1.4 }}>
     {children}
@@ -227,16 +451,25 @@ const Pill = ({ label, color, bg }) => (
   </span>
 );
 
+const TierBadge = ({ tier }) => {
+  if (!tier) return null;
+  return (
+    <span style={{ background: tier.bg, border: `1px solid ${tier.color}55`, borderRadius: "6px", padding: "5px 12px", fontFamily: T.mono, fontSize: "10px", color: tier.color, letterSpacing: "0.08em", whiteSpace: "nowrap", display: "inline-block", fontWeight: 600 }}>
+      {tier.label}
+    </span>
+  );
+};
+
 const Btn = ({ children, onClick, disabled, variant = "primary", small }) => {
-  const pad = small ? "7px 14px" : "12px 26px";
-  const fz  = small ? "11px" : "12px";
-  const variants = {
+  const pad  = small ? "7px 14px" : "12px 26px";
+  const fz   = small ? "11px" : "12px";
+  const vars = {
     primary: { background: disabled ? C.border2 : C.accent, color: disabled ? C.textDim : "#0a0b0a", border: "none" },
     ghost:   { background: "transparent", color: C.textSub, border: `1px solid ${C.border2}` },
     danger:  { background: "transparent", color: "#FCA5A577", border: `1px solid #FCA5A522` },
   };
   return (
-    <button onClick={!disabled ? onClick : undefined} style={{ ...variants[variant], padding: pad, borderRadius: "7px", fontFamily: T.mono, fontSize: fz, letterSpacing: "0.08em", textTransform: "uppercase", cursor: disabled ? "not-allowed" : "pointer", fontWeight: 600, transition: "opacity 0.15s" }}>
+    <button onClick={!disabled ? onClick : undefined} style={{ ...vars[variant], padding: pad, borderRadius: "7px", fontFamily: T.mono, fontSize: fz, letterSpacing: "0.08em", textTransform: "uppercase", cursor: disabled ? "not-allowed" : "pointer", fontWeight: 600, transition: "opacity 0.15s" }}>
       {children}
     </button>
   );
@@ -254,60 +487,40 @@ const Field = ({ value, onChange, placeholder, multiline, rows, disabled, mono, 
   return <input type={type || "text"} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} disabled={disabled} style={base} />;
 };
 
-const ScoreCard = ({ label, score }) => (
-  <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "20px 22px", flex: 1 }}>
-    <Label>{label}</Label>
-    <div style={{ fontFamily: T.display, fontSize: "48px", color: scoreColor(score), lineHeight: 1, fontWeight: 800, marginBottom: "12px" }}>
-      {score ?? "—"}<span style={{ fontSize: "18px", color: C.textDim, fontWeight: 400 }}>/10</span>
-    </div>
-    <div style={{ height: "3px", background: C.border2, borderRadius: "2px" }}>
-      {score && <div style={{ height: "100%", width: `${score * 10}%`, background: scoreColor(score), borderRadius: "2px", boxShadow: `0 0 10px ${scoreColor(score)}66` }} />}
-    </div>
-  </div>
-);
-
-// ─── STEP ACCORDION RENDERER ─────────────────────────────────────────────────
+// ─── STEP ACCORDION ───────────────────────────────────────────────────────────
 const STEP_LABELS = {
-  "STEP 1": "Recruiter Evaluation",
-  "STEP 2": "Hiring Manager View",
-  "STEP 3": "Resume Optimization",
-  "STEP 4": "ATS Keywords",
-  "STEP 5": "Interview Prep",
-  "STEP 6": "Resume Edit Suggestions",
-  "STEP 7": "Next Steps",
-  "STEP 8": "Honest Verdict",
+  "STEP 1": "Executive Summary",
+  "STEP 2": "Hiring Decision",
+  "STEP 3": "Strengths & Transferable Experience",
+  "STEP 4": "Hiring Risks",
+  "STEP 5": "Resume Improvements",
+  "STEP 6": "Interview Risk",
+  "STEP 7": "Honest Verdict",
+  "STEP 8": "Decision Confidence",
 };
 
 function StepAccordion({ text }) {
-  const [open, setOpen] = useState(null); // all collapsed by default
-
-  // Split text into sections by ## STEP markers
+  const [open, setOpen] = useState(null);
   const sections = [];
-  let preamble = "";
   const stepRegex = /(?:##\s*|\*\*)(STEP \d+[^*\n]*)(?:\*\*)?/g;
   const parts = text.split(stepRegex);
+  let preamble = "";
   if (parts.length > 1) {
     preamble = parts[0];
     for (let i = 1; i < parts.length; i += 2) {
       const header = parts[i];
-      const body = parts[i + 1] || "";
-      const key = header.match(/STEP \d+/)?.[0] || header;
+      const body   = parts[i + 1] || "";
+      const key    = header.match(/STEP \d+/)?.[0] || header;
       const friendlyTitle = Object.entries(STEP_LABELS).find(([k]) => header.includes(k))?.[1] || header;
       sections.push({ key, header, friendlyTitle, body });
     }
   }
-
   if (sections.length === 0) return <RenderLines text={text} />;
 
-  // Step accent colors for visual variety
   const stepColors = {
-    "STEP 1": C.accent,
-    "STEP 2": C.yellow,
-    "STEP 3": C.mint,
-    "STEP 4": C.blue,
-    "STEP 5": C.orange,
-    "STEP 6": C.red,
-    "STEP 7": C.accent,
+    "STEP 1": C.accent, "STEP 2": C.mint,   "STEP 3": C.yellow,
+    "STEP 4": C.orange, "STEP 5": C.red,    "STEP 6": C.blue,
+    "STEP 7": C.accent, "STEP 8": C.textSub,
   };
 
   return (
@@ -320,22 +533,19 @@ function StepAccordion({ text }) {
       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
         {sections.map(({ key, friendlyTitle, body }) => {
           const isOpen = open === key;
-          const stepColor = stepColors[key] || C.accent;
+          const col = stepColors[key] || C.accent;
           return (
-            <div key={key} style={{ border: `1px solid ${isOpen ? stepColor + "55" : C.border}`, borderRadius: "10px", overflow: "hidden", transition: "border-color 0.2s", background: isOpen ? C.surface : "transparent" }}>
-              <button
-                onClick={() => setOpen(isOpen ? null : key)}
-                style={{ width: "100%", padding: "13px 18px", background: "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}
-              >
+            <div key={key} style={{ border: `1px solid ${isOpen ? col + "55" : C.border}`, borderRadius: "10px", overflow: "hidden", background: isOpen ? C.surface : "transparent" }}>
+              <button onClick={() => setOpen(isOpen ? null : key)} style={{ width: "100%", padding: "13px 18px", background: "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <div style={{ width: "3px", height: "14px", background: isOpen ? stepColor : C.textDim, borderRadius: "2px", flexShrink: 0, transition: "background 0.2s" }} />
-                  <span style={{ fontFamily: T.mono, fontSize: "10px", color: isOpen ? stepColor : C.textDim, letterSpacing: "0.14em", textTransform: "uppercase" }}>{key}</span>
+                  <div style={{ width: "3px", height: "14px", background: isOpen ? col : C.textDim, borderRadius: "2px", flexShrink: 0 }} />
+                  <span style={{ fontFamily: T.mono, fontSize: "10px", color: isOpen ? col : C.textDim, letterSpacing: "0.14em", textTransform: "uppercase" }}>{key}</span>
                   <span style={{ fontFamily: T.body, fontSize: "14px", color: isOpen ? C.text : C.textSub, fontWeight: isOpen ? 500 : 400 }}>{friendlyTitle}</span>
                 </div>
                 <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim, flexShrink: 0 }}>{isOpen ? "▲" : "▼"}</span>
               </button>
               {isOpen && (
-                <div style={{ borderTop: `1px solid ${stepColor}33` }}>
+                <div style={{ borderTop: `1px solid ${col}33` }}>
                   <div style={{ padding: "20px 22px 22px" }}>
                     <RenderLines text={body} />
                   </div>
@@ -349,16 +559,16 @@ function StepAccordion({ text }) {
   );
 }
 
-// ─── INLINE MARKDOWN RENDERER ─────────────────────────────────────────────────
+// ─── MARKDOWN RENDERER ────────────────────────────────────────────────────────
 const RenderLines = ({ text }) => {
-  const lines = text.split('\n');
+  const lines = text.split("\n");
   const elements = [];
   let bulletBuffer = [];
 
   const flushBullets = () => {
     if (!bulletBuffer.length) return;
     elements.push(
-      <div key={`bullets-${elements.length}`} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px", margin: "10px 0", display: "flex", flexDirection: "column", gap: "6px" }}>
+      <div key={`b-${elements.length}`} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px", margin: "10px 0", display: "flex", flexDirection: "column", gap: "6px" }}>
         {bulletBuffer.map((b, bi) => (
           <div key={bi} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
             <span style={{ color: C.accent, flexShrink: 0, marginTop: "5px", fontSize: "10px" }}>▸</span>
@@ -371,39 +581,46 @@ const RenderLines = ({ text }) => {
   };
 
   lines.forEach((line, i) => {
-    if (line.startsWith('### ')) {
+    if (line.startsWith("### ")) {
       flushBullets();
       elements.push(<h3 key={i} style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: "18px 0 6px", fontWeight: 700, lineHeight: 1.4, paddingBottom: "6px", borderBottom: `1px solid ${C.border}` }}>{line.slice(4)}</h3>);
+    } else if (/^IMPROVEMENT \d+:/.test(line)) {
+      flushBullets();
+      elements.push(<p key={i} style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, margin: "20px 0 6px", letterSpacing: "0.06em", fontWeight: 500 }}>{line}</p>);
     } else if (/^EDIT \d+:/.test(line)) {
       flushBullets();
       elements.push(<p key={i} style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, margin: "20px 0 6px", letterSpacing: "0.06em", fontWeight: 500 }}>{line}</p>);
-    } else if (line.startsWith('ORIGINAL:')) {
+    } else if (line.startsWith("CURRENT:") || line.startsWith("ORIGINAL:")) {
       flushBullets();
+      const val = line.replace(/^(CURRENT|ORIGINAL):/, "").trim();
       elements.push(
         <div key={i} style={{ background: "#1a0d0d", border: `1px solid ${C.red}33`, borderRadius: "6px", padding: "10px 14px", margin: "4px 0" }}>
-          <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.red, opacity: 0.6, margin: "0 0 4px", letterSpacing: "0.1em" }}>ORIGINAL</p>
-          <p style={{ fontFamily: T.body, fontSize: "13px", color: "#FCA5A5", margin: 0, lineHeight: 1.6 }}>{line.replace('ORIGINAL:', '').trim()}</p>
+          <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.red, opacity: 0.6, margin: "0 0 4px", letterSpacing: "0.1em" }}>CURRENT</p>
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: "#FCA5A5", margin: 0, lineHeight: 1.6 }}>{val}</p>
         </div>
       );
-    } else if (line.startsWith('SUGGESTED:')) {
+    } else if (line.startsWith("IMPROVED:") || line.startsWith("SUGGESTED:")) {
+      const val = line.replace(/^(IMPROVED|SUGGESTED):/, "").trim();
       elements.push(
         <div key={i} style={{ background: "#0a1a0d", border: `1px solid ${C.accent}33`, borderRadius: "6px", padding: "10px 14px", margin: "4px 0" }}>
-          <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, opacity: 0.6, margin: "0 0 4px", letterSpacing: "0.1em" }}>SUGGESTED</p>
-          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.mint, margin: 0, lineHeight: 1.6 }}>{line.replace('SUGGESTED:', '').trim()}</p>
+          <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, opacity: 0.6, margin: "0 0 4px", letterSpacing: "0.1em" }}>IMPROVED</p>
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.mint, margin: 0, lineHeight: 1.6 }}>{val}</p>
         </div>
       );
-    } else if (line.startsWith('WHY:')) {
-      const whyText = line.slice(4).trim().replace(/\*\*/g, '').split('---')[0].trim();
-      if (whyText) elements.push(<p key={i} style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: "4px 0 12px", fontStyle: "italic", lineHeight: 1.65, paddingLeft: "4px" }}>↳ {whyText}</p>);
+    } else if (line.startsWith("PROBLEM:") || line.startsWith("ISSUE:")) {
+      const val = line.replace(/^(PROBLEM|ISSUE):/, "").trim();
+      if (val) elements.push(<p key={i} style={{ fontFamily: T.body, fontSize: "12px", color: C.yellow, margin: "4px 0", lineHeight: 1.6, paddingLeft: "4px" }}>⚠ {val}</p>);
+    } else if (line.startsWith("WHY IT WORKS:") || line.startsWith("WHY:")) {
+      const val = line.replace(/^(WHY IT WORKS|WHY):/, "").trim().replace(/\*\*/g, "").split("---")[0].trim();
+      if (val) elements.push(<p key={i} style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: "4px 0 12px", fontStyle: "italic", lineHeight: 1.65, paddingLeft: "4px" }}>↳ {val}</p>);
     } else if (line.match(/^[-*] /)) {
       bulletBuffer.push(line.slice(2).replace(/\*\*(.*?)\*\*/g, (_, t) => t));
-    } else if (line.trim() === '') {
+    } else if (line.trim() === "") {
       flushBullets();
       elements.push(<div key={i} style={{ height: "8px" }} />);
-    } else if (line.startsWith('|')) {
-      // Table row — frame as a subtle row
+    } else if (line.startsWith("|")) {
       flushBullets();
-      const cells = line.split('|').filter(c => c.trim() && !c.match(/^[-\s]+$/));
+      const cells = line.split("|").filter(c => c.trim() && !c.match(/^[-\s]+$/));
       if (cells.length > 0) {
         elements.push(
           <div key={i} style={{ display: "grid", gridTemplateColumns: `repeat(${cells.length}, 1fr)`, gap: "0", borderBottom: `1px solid ${C.border}`, padding: "8px 0" }}>
@@ -461,6 +678,262 @@ const Timeline = ({ job }) => {
   );
 };
 
+// ─── ANALYZER PAGE ────────────────────────────────────────────────────────────
+function AnalyzerPage({ resume, onSaveJob }) {
+  const [mode, setMode]             = useState("url");
+  const [input, setInput]           = useState("");
+  const [result, setResult]         = useState("");
+  const [loading, setLoading]       = useState(false);
+  const [phase, setPhase]           = useState("idle");
+  const [phaseIdx, setPhaseIdx]     = useState(0);
+  const [error, setError]           = useState("");
+  const [tone, setTone]             = useState("brutal");
+  const [scores, setScores]         = useState({ recruiter: null, hm: null });
+  const [tier, setTier]             = useState(null);
+  const [odds, setOdds]             = useState(null);
+  const [decision, setDecision]     = useState(null);
+  const [strengths, setStrengths]       = useState([]);
+  const [transferable, setTransferable] = useState([]);
+  const [risks, setRisks]               = useState([]);
+  const [improvements, setImprovements] = useState([]);
+  const [interviewRisk, setInterviewRisk] = useState([]);
+  const [verdict, setVerdict]           = useState(null);
+  const [confidence, setConfidence]     = useState(null);
+  const [showFull, setShowFull]     = useState(false);
+  const resultRef = useRef(null);
+  const savedRef  = useRef(false);
+
+  const analyze = async (overrideTone) => {
+    const activeTone = overrideTone || tone;
+    if (!input.trim()) return;
+    const apiKey  = localStorage.getItem(KEYS.apiKey);
+    const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
+    if (!apiKey) { setError("No API key found. Go to Settings and add your Anthropic API key."); return; }
+
+    savedRef.current = false;
+    setLoading(true); setResult(""); setPhase("loading"); setPhaseIdx(0); setError("");
+    setScores({ recruiter: null, hm: null }); setTier(null); setOdds(null);
+    setDecision(null); setStrengths([]); setTransferable([]); setRisks([]); setImprovements([]);
+    setInterviewRisk([]); setVerdict(null); setConfidence(null); setShowFull(false);
+
+    const interval = setInterval(() => setPhaseIdx(p => (p + 1) % PHASES.length), 1800);
+
+    try {
+      const userMsg = isUrl(input)
+        ? `Fetch and analyze this job posting URL: ${input.trim()}`
+        : `Analyze this job posting:\n\n${input}`;
+
+      const body = {
+        model: "claude-sonnet-4-6",
+        max_tokens: 6000,
+        system: ANALYSIS_PROMPT(resume, activeTone),
+        messages: [{ role: "user", content: userMsg }],
+      };
+      if (isUrl(input)) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
+
+      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, "") : "https://api.anthropic.com/v1/messages";
+      const headers = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+      if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
+
+      const res  = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (data.error) throw new Error(`API error: ${data.error.message || data.error.type}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+
+      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
+      clearInterval(interval);
+
+      // Parse all structured sections
+      const parsedScores = parseScores(text);
+      const parsedTier   = parseTier(text) || tierFromScores(parsedScores.recruiter, parsedScores.hm);
+      const parsedOdds   = parseOdds(text);
+      const parsedDec    = parseHiringDecision(text);
+      const { strengths: parsedStr, transferable: parsedXfer } = parseStrengths(text);
+      const parsedRisks  = parseRisks(text);
+      const parsedImprv  = parseImprovements(text).length ? parseImprovements(text) : parseEdits(text);
+      const parsedIR     = parseInterviewRisk(text);
+      const parsedVerd   = parseVerdict(text);
+      const parsedConf   = parseDecisionConfidence(text);
+
+      setResult(text);
+      setScores(parsedScores);
+      setTier(parsedTier);
+      setOdds(parsedOdds);
+      setDecision(parsedDec);
+      setStrengths(parsedStr || []);
+      setTransferable(parsedXfer || []);
+      setRisks(parsedRisks);
+      setImprovements(parsedImprv);
+      setInterviewRisk(parsedIR);
+      setVerdict(parsedVerd);
+      setConfidence(parsedConf);
+      setPhase("done");
+
+      // Extract title + company, auto-save to pipeline
+      const titleMatch = text.match(/(?:role|position|job)[:\s]+([^\n.]{5,60})/i);
+      const compMatch  = text.match(/(?:company|at)\s+([A-Z][a-zA-Z\s&,.]+?)(?:\s*[,.\n(])/);
+      const autoTitle   = titleMatch?.[1]?.trim().slice(0, 60) || "Untitled Role";
+      const autoCompany = compMatch?.[1]?.trim().slice(0, 40) || "Unknown Company";
+
+      if (!savedRef.current) {
+        savedRef.current = true;
+        const t2 = now();
+        onSaveJob({
+          id: uid(), title: autoTitle, company: autoCompany,
+          url: isUrl(input) ? input.trim() : "", status: "saved",
+          recruiterScore: parsedScores.recruiter, hmScore: parsedScores.hm,
+          tier: parsedTier?.label || null,
+          notes: "", analysis: text, dateAdded: t2, dateSaved: t2,
+          dateApplied: null, dateScreen: null, dateInterview: null,
+          dateOffer: null, dateRejected: null,
+        });
+      }
+
+      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
+    } catch (err) {
+      clearInterval(interval);
+      const msg = err.message || "Something went wrong.";
+      setError(msg.includes("fetch") ? "Network error — check your connection and try again." : msg);
+      setPhase("idle");
+    }
+    setLoading(false);
+  };
+
+  const reset = () => {
+    setInput(""); setResult(""); setPhase("idle"); setError("");
+    setScores({ recruiter: null, hm: null }); setTier(null); setOdds(null);
+    setDecision(null); setStrengths([]); setTransferable([]); setRisks([]); setImprovements([]);
+    setInterviewRisk([]); setVerdict(null); setConfidence(null); setShowFull(false);
+  };
+
+  const handleToneChange = (key) => { setTone(key); analyze(key); };
+
+  return (
+    <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
+
+      {/* Hero — idle state only */}
+      {phase === "idle" && (
+        <div style={{ marginBottom: "32px" }}>
+          <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 14px" }}>
+            Hiring Simulation · Resume Active
+          </p>
+          <h1 style={{ fontFamily: T.display, fontSize: "clamp(28px,5vw,40px)", color: C.text, fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.03em", margin: "0 0 12px" }}>
+            Drop a job.<br /><span style={{ color: C.accent }}>Get the truth.</span>
+          </h1>
+          <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: 0 }}>
+            Simulates the internal hiring discussion that determines whether a candidate advances — scores, decision, strengths, risks, improvements, and the questions they'll actually ask.
+          </p>
+        </div>
+      )}
+
+      {/* Input panel */}
+      {phase !== "done" && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", overflow: "hidden", marginBottom: "16px" }}>
+          <div style={{ display: "flex", borderBottom: `1px solid ${C.border}` }}>
+            {[{ k: "url", label: "⌁  Job URL" }, { k: "paste", label: "≡  Paste Text" }].map(({ k, label }) => (
+              <button key={k} onClick={() => { setMode(k); setInput(""); }} style={{ flex: 1, padding: "14px", background: mode === k ? C.surface2 : "transparent", border: "none", borderBottom: `2px solid ${mode === k ? C.accent : "transparent"}`, color: mode === k ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div style={{ padding: "20px" }}>
+            {mode === "url"
+              ? <Field value={input} onChange={setInput} placeholder="https://careers.company.com/job/12345" mono />
+              : <Field value={input} onChange={setInput} placeholder="Paste the full job description — title, responsibilities, requirements, everything..." multiline rows={10} />
+            }
+          </div>
+          {error && (
+            <div style={{ margin: "0 20px 20px", padding: "12px 16px", background: "#1a0d0d", border: `1px solid ${C.red}44`, borderRadius: "8px" }}>
+              <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.red, margin: 0 }}>⚠ {error}</p>
+            </div>
+          )}
+          <div style={{ padding: "0 20px 20px", display: "flex", justifyContent: "flex-end" }}>
+            <Btn onClick={() => analyze()} disabled={loading || input.trim().length < 10}>
+              {loading ? "Analyzing..." : "Analyze →"}
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Loading */}
+      {phase === "loading" && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "44px", textAlign: "center" }}>
+          <div style={{ display: "flex", gap: "5px", justifyContent: "center", marginBottom: "22px" }}>
+            {[0,1,2,3].map(i => (
+              <div key={i} style={{ width: "4px", height: "22px", background: C.accent, borderRadius: "2px", animation: `bar 1.2s ease-in-out ${i*0.15}s infinite` }} />
+            ))}
+          </div>
+          <style>{`@keyframes bar{0%,100%{transform:scaleY(0.35);opacity:0.25}50%{transform:scaleY(1);opacity:1}}`}</style>
+          <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", margin: 0 }}>{PHASES[phaseIdx]}</p>
+        </div>
+      )}
+
+      {/* Results */}
+      {phase === "done" && result && (
+        <div ref={resultRef} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+
+          {/* User bubble */}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "18px 18px 4px 18px", padding: "12px 18px", maxWidth: "80%" }}>
+              <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.textSub, margin: 0, wordBreak: "break-all", lineHeight: 1.5 }}>
+                {input.trim().slice(0, 120)}{input.trim().length > 120 ? "..." : ""}
+              </p>
+            </div>
+          </div>
+
+          {/* Score + Tier */}
+          <ScoreTierBubble scores={scores} tier={tier} odds={odds} tone={tone} onToneChange={handleToneChange} />
+
+          {/* Hiring Decision */}
+          <HiringDecisionBubble decision={decision} />
+
+          {/* Strengths + Risks */}
+          <StrengthsRisksBubble strengths={strengths} transferable={transferable} risks={risks} />
+
+          {/* Resume Improvements */}
+          <ImprovementsBubble improvements={improvements} />
+
+          {/* Interview Risk */}
+          <InterviewRiskBubble questions={interviewRisk} />
+
+          {/* Honest Verdict */}
+          <VerdictBubble verdict={verdict} />
+
+          {/* Decision Confidence */}
+          <DecisionConfidenceBubble confidence={confidence} />
+
+          {/* Full analysis toggle */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+            <div style={{ width: "28px", flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <button onClick={() => setShowFull(s => !s)} style={{ width: "100%", background: "transparent", border: `1px solid ${C.border}`, borderRadius: "10px", padding: "12px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", marginBottom: showFull ? "10px" : "0" }}>
+                <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textSub, letterSpacing: "0.1em", textTransform: "uppercase" }}>Full Analysis (7 steps)</span>
+                <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>{showFull ? "▲ Hide" : "▼ Show"}</span>
+              </button>
+              {showFull && (
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "28px 32px" }}>
+                  <StepAccordion text={result} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "center", paddingLeft: "38px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#0d1a10", border: `1px solid ${C.accent}22`, borderRadius: "20px", padding: "6px 14px" }}>
+              <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: C.accent }} />
+              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em" }}>Saved to Pipeline</span>
+            </div>
+            <button onClick={reset} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>New Analysis</button>
+            <button onClick={() => navigator.clipboard?.writeText(result)} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>Copy</button>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── DATE EDITOR ──────────────────────────────────────────────────────────────
 const DateEditor = ({ job, onUpdate }) => {
   const [open, setOpen] = useState(false);
@@ -506,529 +979,397 @@ const DateEditor = ({ job, onUpdate }) => {
   );
 };
 
-// ─── ONBOARDING ───────────────────────────────────────────────────────────────
-function Onboarding({ onComplete }) {
-  const [step, setStep] = useState(0);
-  const [resume, setResume] = useState("");
-  const charOk = resume.trim().length >= 100;
+// ─── INFLOW AVATAR ────────────────────────────────────────────────────────────
+const InflowAvatar = () => (
+  <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.surface, border: `1px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
+    <svg width="14" height="14" viewBox="0 0 48 48">
+      <circle cx="24" cy="13" r="4.5" fill={C.accent}/>
+      <path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
+    </svg>
+  </div>
+);
 
-  const save = async () => {
-    if (!charOk) return;
-    await store.set(KEYS.resume, resume.trim());
-    onComplete(resume.trim());
-  };
+// ─── RESULT BUBBLE WRAPPER ────────────────────────────────────────────────────
+const ResultBubble = ({ children, style }) => (
+  <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+    <InflowAvatar />
+    <div style={{ flex: 1, ...style }}>{children}</div>
+  </div>
+);
+
+// ─── SCORE + TIER BUBBLE ──────────────────────────────────────────────────────
+function ScoreTierBubble({ scores, tier, odds, tone, onToneChange }) {
+  const impactColor = (pct) => pct >= 50 ? C.accent : pct >= 20 ? C.yellow : C.red;
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
-      <div style={{ width: "100%", maxWidth: "580px" }}>
-        {/* Logo */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "56px" }}>
-          <svg width="30" height="30" viewBox="0 0 48 48">
-            <rect width="48" height="48" rx="10" fill={C.bg} stroke={C.border2} strokeWidth="2"/>
-            <circle cx="24" cy="13" r="4.5" fill={C.accent}/>
-            <path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
-          </svg>
-          <span style={{ fontFamily: T.display, fontSize: "22px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em" }}>inflow</span>
+    <ResultBubble>
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+
+        {/* Scores row */}
+        <div style={{ display: "flex", gap: "10px" }}>
+          {[{ label: "Recruiter Score", score: scores.recruiter }, { label: "Hiring Mgr Score", score: scores.hm }].map(({ label, score }) => (
+            <div key={label} style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "14px 16px" }}>
+              <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px" }}>{label}</p>
+              <div style={{ display: "flex", alignItems: "baseline", gap: "6px", marginBottom: "8px" }}>
+                <span style={{ fontFamily: T.display, fontSize: "36px", color: scoreColor(score), fontWeight: 800, lineHeight: 1 }}>{score ?? "—"}</span>
+                <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>/10</span>
+              </div>
+              <div style={{ height: "3px", background: C.border2, borderRadius: "2px", marginBottom: "8px" }}>
+                {score && <div style={{ height: "100%", width: `${score * 10}%`, background: scoreColor(score), borderRadius: "2px" }} />}
+              </div>
+              <p style={{ fontFamily: T.body, fontSize: "12px", color: scoreColor(score), margin: 0 }}>{scoreLabel(score)}</p>
+            </div>
+          ))}
         </div>
 
-        {step === 0 && (
-          <div>
-            <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.18em", textTransform: "uppercase", margin: "0 0 18px" }}>Welcome</p>
-            <h1 style={{ fontFamily: T.display, fontSize: "clamp(36px,6vw,56px)", color: C.text, fontWeight: 800, lineHeight: 1.05, letterSpacing: "-0.03em", margin: "0 0 22px" }}>
-              Your job search,<br /><span style={{ color: C.accent }}>in flow state.</span>
-            </h1>
-            <p style={{ fontFamily: T.body, fontSize: "16px", color: C.textMid, lineHeight: 1.8, margin: "0 0 36px" }}>
-              inflow analyzes any job posting against your resume — scores your fit honestly, rewrites your bullets for each role, gives you specific resume edits, and tracks your entire pipeline with stage-by-stage timestamps.
-            </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "40px" }}>
-              {[
-                "Brutally honest recruiter + hiring manager scoring",
-                "AI-powered resume edit suggestions per role",
-                "ATS keyword analysis and interview prep",
-                "Full pipeline tracker with per-stage date history",
-              ].map((f, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
-                  <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: C.accent, flexShrink: 0, marginTop: "8px" }} />
-                  <span style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.6 }}>{f}</span>
-                </div>
-              ))}
-            </div>
-            <Btn onClick={() => setStep(1)}>Get Started →</Btn>
+        {/* Tier + interview probability */}
+        {(tier || odds?.probability) && (
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            {tier && (
+              <div>
+                <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 8px" }}>Overall Recommendation</p>
+                <TierBadge tier={tier} />
+              </div>
+            )}
+            {odds?.probability != null && (
+              <div style={{ textAlign: "right" }}>
+                <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Interview Probability</p>
+                <span style={{ fontFamily: T.display, fontSize: "32px", color: impactColor(odds.probability), fontWeight: 800, lineHeight: 1 }}>{odds.probability}<span style={{ fontSize: "16px", color: C.textDim, fontWeight: 400 }}>%</span></span>
+              </div>
+            )}
           </div>
         )}
 
-        {step === 1 && (
-          <div>
-            <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.18em", textTransform: "uppercase", margin: "0 0 18px" }}>Setup — Step 1 of 1</p>
-            <h2 style={{ fontFamily: T.display, fontSize: "34px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em", margin: "0 0 12px" }}>Paste your resume.</h2>
-            <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "0 0 24px" }}>
-              Plain text is fine — copy from your Word doc, Google Doc, or PDF. Include your summary, experience, education, and skills. inflow references this for every job you analyze. You can update it anytime in Settings.
-            </p>
-            <div style={{ marginBottom: "20px" }}>
-              <Field value={resume} onChange={setResume} placeholder="Paste your full resume here..." multiline rows={14} />
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-              <Btn onClick={save} disabled={!charOk}>Save Resume & Launch →</Btn>
-              <span style={{ fontFamily: T.mono, fontSize: "11px", color: charOk ? C.accent : C.textDim }}>
-                {resume.trim().length} chars {charOk ? "✓ ready" : `— need ${100 - resume.trim().length} more`}
-              </span>
-            </div>
+        {/* Tone toggle */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.1em" }}>TONE</span>
+          {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
+            <button key={key} onClick={() => onToneChange(key)} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0d1a10" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
+              <span>{cfg.icon}</span> {cfg.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </ResultBubble>
+  );
+}
+
+// ─── HIRING DECISION BUBBLE ───────────────────────────────────────────────────
+function HiringDecisionBubble({ decision }) {
+  if (!decision) return null;
+  const { verdict, reasoning, concern, selling, smallest, doNotChange } = decision;
+
+  const verdictStyle = verdict === "Yes"
+    ? { color: C.accent, bg: "#0d1a10", border: C.accent }
+    : verdict === "No"
+    ? { color: C.red, bg: "#1a0d0d", border: C.red }
+    : { color: C.yellow, bg: "#1a1800", border: C.yellow };
+
+  return (
+    <ResultBubble>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", overflow: "hidden" }}>
+        {/* Header */}
+        <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: "10px" }}>
+          <div style={{ width: "3px", height: "14px", background: verdictStyle.color, borderRadius: "2px", flexShrink: 0 }} />
+          <span style={{ fontFamily: T.mono, fontSize: "10px", color: verdictStyle.color, letterSpacing: "0.12em", textTransform: "uppercase" }}>Hiring Decision</span>
+          {verdict && (
+            <span style={{ marginLeft: "auto", background: verdictStyle.bg, border: `1px solid ${verdictStyle.border}44`, borderRadius: "6px", padding: "4px 12px", fontFamily: T.mono, fontSize: "11px", color: verdictStyle.color, fontWeight: 700, letterSpacing: "0.08em" }}>
+              {verdict === "Conditional" ? "Conditional ▸" : verdict === "Yes" ? "Interview ✓" : "Pass ✗"}
+            </span>
+          )}
+        </div>
+
+        {/* Reasoning */}
+        {reasoning && (
+          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}` }}>
+            <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, margin: 0, lineHeight: 1.8 }}>{reasoning}</p>
           </div>
         )}
-      </div>
-    </div>
-  );
-}
 
-// ─── EDIT CARD ────────────────────────────────────────────────────────────────
-function EditCard({ edit, index, isLast = false }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div style={{ borderBottom: isLast ? "none" : `1px solid ${C.border}` }}>
-      <button onClick={() => setOpen(!open)} style={{ width: "100%", padding: "12px 22px", background: "transparent", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: "12px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
-          <span style={{ fontFamily: T.mono, fontSize: "9px", color: open ? C.accent : C.textDim, letterSpacing: "0.1em", flexShrink: 0 }}>EDIT {index + 1}</span>
-          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{edit.orig?.slice(0, 60)}{edit.orig?.length > 60 ? "..." : ""}</p>
-        </div>
-        <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, flexShrink: 0 }}>{open ? "▲" : "▼"}</span>
-      </button>
-      {open && (
-        <div style={{ borderTop: `1px solid ${C.border}` }}>
-          <div style={{ padding: "12px 22px", background: "#1a0d0d" }}>
-            <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.red, letterSpacing: "0.1em", margin: "0 0 5px", opacity: 0.7 }}>ORIGINAL</p>
-            <p style={{ fontFamily: T.body, fontSize: "13px", color: "#FCA5A5", margin: 0, lineHeight: 1.65 }}>{edit.orig}</p>
-          </div>
-          <div style={{ padding: "12px 22px", background: "#0a1a0d", borderTop: `1px solid ${C.border}` }}>
-            <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em", margin: "0 0 5px", opacity: 0.7 }}>SUGGESTED</p>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
-              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.mint, margin: 0, lineHeight: 1.65, flex: 1 }}>{edit.sugg}</p>
-              <button onClick={() => navigator.clipboard?.writeText(edit.sugg)} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "4px 10px", fontFamily: T.mono, fontSize: "9px", color: C.textDim, cursor: "pointer", flexShrink: 0, letterSpacing: "0.08em" }}>Copy</button>
+        {/* Key signals */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
+          {concern && (
+            <div style={{ padding: "12px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", gap: "12px", alignItems: "flex-start" }}>
+              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.red, letterSpacing: "0.1em", textTransform: "uppercase", flexShrink: 0, paddingTop: "2px", width: "90px" }}>Biggest Risk</span>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.65 }}>{concern}</p>
             </div>
-          </div>
-          {edit.why && (
-            <div style={{ padding: "10px 22px 12px", background: C.surface2, borderTop: `1px solid ${C.border}` }}>
-              <p style={{ fontFamily: T.body, fontSize: "12px", color: C.textDim, margin: 0, lineHeight: 1.6, fontStyle: "italic" }}>↳ {edit.why}</p>
+          )}
+          {selling && (
+            <div style={{ padding: "12px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", gap: "12px", alignItems: "flex-start" }}>
+              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", flexShrink: 0, paddingTop: "2px", width: "90px" }}>Best Signal</span>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.65 }}>{selling}</p>
+            </div>
+          )}
+          {smallest && (
+            <div style={{ padding: "12px 18px", borderBottom: doNotChange ? `1px solid ${C.border}` : "none", display: "flex", gap: "12px", alignItems: "flex-start" }}>
+              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.yellow, letterSpacing: "0.1em", textTransform: "uppercase", flexShrink: 0, paddingTop: "2px", width: "90px" }}>Quick Win</span>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.65 }}>{smallest}</p>
+            </div>
+          )}
+          {doNotChange && (
+            <div style={{ padding: "12px 18px", display: "flex", gap: "12px", alignItems: "flex-start" }}>
+              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.mint, letterSpacing: "0.1em", textTransform: "uppercase", flexShrink: 0, paddingTop: "2px", width: "90px" }}>Keep As-Is</span>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.65 }}>{doNotChange}</p>
             </div>
           )}
         </div>
-      )}
-    </div>
+      </div>
+    </ResultBubble>
   );
 }
 
-// ─── ANALYZER PAGE ────────────────────────────────────────────────────────────
-function AnalyzerPage({ resume, onSaveJob }) {
-  const [mode, setMode] = useState("paste");
-  const [input, setInput] = useState("");
-  const [result, setResult] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [scores, setScores] = useState({ recruiter: null, hm: null });
-  const [phase, setPhase] = useState("idle");
-  const [phaseIdx, setPhaseIdx] = useState(0);
-  const [error, setError] = useState("");
-  const [jobTitle, setJobTitle] = useState("");
-  const [company, setCompany] = useState("");
-  const [savedToast, setSavedToast] = useState(false);
-  const [tone, setTone] = useState("brutal");
-  const [edits, setEdits] = useState([]);
-  const [nextSteps, setNextSteps] = useState([]);
-  const [verdict, setVerdict] = useState(null);
-  const [odds, setOdds] = useState(null);
-  const [showFullAnalysis, setShowFullAnalysis] = useState(false);
-  const [activeEdit, setActiveEdit] = useState(0);
-  const [retryCountdown, setRetryCountdown] = useState(0);
-  const resultRef = useRef(null);
-  const savedRef  = useRef(false); // prevents duplicate pipeline entries on tone re-run
-  const retryTimer = useRef(null);
+// ─── STRENGTHS + RISKS BUBBLE ─────────────────────────────────────────────────
+function StrengthsRisksBubble({ strengths, transferable, risks }) {
+  const allStrengths = strengths || [];
+  const allTransferable = transferable || [];
+  const hasTransferable = allTransferable.length > 0;
+  const tabs = [
+    { key: "strengths",    label: "Strengths",    color: C.accent },
+    ...(hasTransferable ? [{ key: "transferable", label: "Transferable", color: C.blue }] : []),
+    { key: "risks",        label: "Hiring Risks", color: C.orange },
+  ];
+  const [tab, setTab] = useState("strengths");
+  if (!allStrengths.length && !risks?.length) return null;
 
-  const analyze = async (overrideTone) => {
-    const activeTone = overrideTone || tone;
-    // Guard checks BEFORE any state changes
-    if (!input.trim()) return;
-    const apiKey = localStorage.getItem(KEYS.apiKey);
-    const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
-    if (!apiKey) { setError("No API key found. Go to Settings and add your Anthropic API key."); return; }
-    savedRef.current = false; // reset save guard for new analysis
-    setLoading(true); setResult(""); setScores({ recruiter: null, hm: null });
-    setPhase("loading"); setPhaseIdx(0); setError("");
-    const interval = setInterval(() => setPhaseIdx(p => (p + 1) % PHASES.length), 1800);
-    try {
-      const userMsg = isUrl(input)
-        ? `Fetch and analyze this job posting URL: ${input.trim()}`
-        : `Analyze this job posting:\n\n${input}`;
-      const body = {
-        model: "claude-sonnet-4-6", max_tokens: 4000,
-        system: ANALYSIS_PROMPT(resume, activeTone),
-        messages: [{ role: "user", content: userMsg }],
-      };
-      if (isUrl(input)) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
-
-      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, '') : "https://api.anthropic.com/v1/messages";
-      const headers = {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      };
-      if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
-
-      const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
-      if (res.status === 503) throw new Error("__503__");
-      const data = await res.json();
-      if (data.error) {
-        if (data.error.type === "authentication_error" || data.error.message?.includes("auth") || data.error.message?.includes("key")) throw new Error("__authError__:" + (data.error.message || ""));
-        throw new Error(`API error: ${data.error.message || data.error.type}`);
-      }
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
-      clearInterval(interval);
-      // Parse scores once, reuse everywhere
-      const parsed = parseScores(text);
-      setResult(text); setScores(parsed); setPhase("done");
-      // Parse resume edits for prominent display
-      const editsRaw = [...text.matchAll(/EDIT \d+:[\s\S]*?(?=EDIT \d+:|## STEP 7|$)/g)].map(m => {
-        const block = m[0];
-        const orig = (block.match(/ORIGINAL:\s*(.+?)(?=SUGGESTED:|$)/s) || [])[1]?.trim();
-        const sugg = (block.match(/SUGGESTED:\s*(.+?)(?=WHY:|$)/s) || [])[1]?.trim();
-        const why  = (block.match(/WHY:\s*(.+?)(?=EDIT \d+:|$)/s) || [])[1]?.trim();
-        return orig && sugg ? { orig, sugg, why } : null;
-      }).filter(Boolean);
-      setEdits(editsRaw);
-      setNextSteps(parseNextSteps(text));
-      setVerdict(parseVerdict(text));
-      setOdds(parseOdds(text));
-      setShowFullAnalysis(false);
-      setActiveEdit(0);
-      // Parse structured data block Claude appends after Step 8
-      let autoTitle = "Untitled Role", autoCompany = "Unknown Company";
-      let autoLocation = "", autoSalary = "", autoJobId = "";
-      let autoWorkArrangement = "", autoEmploymentType = "", autoDeadline = "";
-      let autoSkills = [], autoRecruiterContact = "";
-      const structuredMatch = text.match(/STRUCTURED_DATA:\s*(\{[\s\S]+?\})\s*$/m);
-      if (structuredMatch) {
-        try {
-          const sd = JSON.parse(structuredMatch[1]);
-          autoTitle            = sd.title?.trim()            || autoTitle;
-          autoCompany          = sd.company?.trim()          || autoCompany;
-          autoLocation         = sd.location?.trim()         || "";
-          autoSalary           = sd.salary?.trim()           || "";
-          autoJobId            = sd.jobId?.trim()            || "";
-          autoWorkArrangement  = sd.workArrangement?.trim()  || "";
-          autoEmploymentType   = sd.employmentType?.trim()   || "";
-          autoDeadline         = sd.deadline?.trim()         || "";
-          autoSkills           = Array.isArray(sd.skills) ? sd.skills.filter(Boolean).slice(0,5) : [];
-          autoRecruiterContact = sd.recruiterContact?.trim() || "";
-        } catch {}
-      }
-      if (autoTitle === "Untitled Role") {
-        // Fallback: strip markdown and try regex
-        const cleanText = text.replace(/\*\*/g, '').replace(/\*/g, '');
-        const confirmMatch = cleanText.match(/[Tt]his is\s+(?:[Jj]ob [Ii][Dd] [\w-]+ [—–-] )?(.+?) at ((?:The )?[A-Z][a-zA-Z0-9 &.,']+?)(?=\s*[(\n,]|$)/);
-        if (confirmMatch) {
-          autoTitle   = confirmMatch[1].trim().slice(0, 80);
-          autoCompany = confirmMatch[2].trim().slice(0, 40);
-        }
-      }
-      setJobTitle(autoTitle);
-      setCompany(autoCompany);
-      // Auto-add to pipeline — only if not already saved for this input
-      if (!savedRef.current) {
-        savedRef.current = true;
-        const t2 = now();
-        onSaveJob({ id: uid(), title: autoTitle, company: autoCompany, location: autoLocation, salary: autoSalary, jobId: autoJobId, workArrangement: autoWorkArrangement, employmentType: autoEmploymentType, deadline: autoDeadline, skills: autoSkills, recruiterContact: autoRecruiterContact, url: isUrl(input) ? input.trim() : "", status: "saved", recruiterScore: parsed.recruiter, hmScore: parsed.hm, notes: "", interviewNotes: "", followUpDate: null, analysis: text, dateAdded: t2, dateSaved: t2, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
-        setSavedToast(true); setTimeout(() => setSavedToast(false), 3000);
-      }
-      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
-    } catch (err) {
-      clearInterval(interval);
-      const msg = err.message || "";
-      if (msg === "__503__") {
-        // 503: auto-retry after countdown
-        setLoading(false); setPhase("idle");
-        let secs = 10;
-        setRetryCountdown(secs);
-        setError("Anthropic API is temporarily overloaded. Retrying in...");
-        retryTimer.current = setInterval(() => {
-          secs--;
-          if (secs <= 0) {
-            clearInterval(retryTimer.current);
-            setRetryCountdown(0);
-            setError("");
-            analyze(activeTone);
-          } else {
-            setRetryCountdown(secs);
-          }
-        }, 1000);
-        return;
-      } else if (msg.startsWith("__authError__")) {
-        setError("Invalid API key — check your key in Settings. Make sure it starts with sk-ant-.");
-      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed") || msg.includes("fetch")) {
-        if (mode === "url") {
-          // CORS block from URL mode — auto-switch to paste
-          setError("This site blocks direct URL access (CORS). Switch to Paste Text and copy-paste the job description instead.");
-          setMode("paste");
-          setInput("");
-        } else {
-          setError("Network error — check your connection and try again.");
-        }
-      } else {
-        setError(msg || "Something went wrong. Please try again.");
-      }
-      setPhase("idle");
-    }
-    setLoading(false);
-  };
-
-  const reset = () => { setInput(""); setResult(""); setScores({ recruiter: null, hm: null }); setPhase("idle"); setError(""); setJobTitle(""); setCompany(""); setEdits([]); setNextSteps([]); setVerdict(null); setOdds(null); setShowFullAnalysis(false); setActiveEdit(0); };
+  const likelihoodColor = (l) => l === "High" ? C.red : l === "Medium" ? C.yellow : C.mint;
 
   return (
-    <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
-      {phase === "idle" && (
-      <div style={{ marginBottom: "32px" }}>
-        <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 14px" }}>
-          Analyzer · Resume Active
-        </p>
-        <h1 style={{ fontFamily: T.display, fontSize: "clamp(28px,5vw,40px)", color: C.text, fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.03em", margin: "0 0 12px" }}>
-          Drop a job.<br /><span style={{ color: C.accent }}>Get the truth.</span>
-        </h1>
-        <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: 0 }}>
-          Paste the job description (or try a URL — note most career sites block direct URL fetching). Get scored, specific resume edits, a clear next steps list, and an honest verdict.
-        </p>
-      </div>
-      )}
-
-      {phase !== "done" && (
-        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", overflow: "hidden", marginBottom: "16px" }}>
-          {/* Tabs */}
-          <div style={{ display: "flex", borderBottom: `1px solid ${C.border}` }}>
-            {[{ k: "paste", label: "≡  Paste Text" }, { k: "url", label: "⌁  Job URL" }].map(({ k, label }) => (
-              <button key={k} onClick={() => { setMode(k); setInput(""); setError(""); }} style={{ flex: 1, padding: "14px", background: mode === k ? C.surface2 : "transparent", border: "none", borderBottom: `2px solid ${mode === k ? C.accent : "transparent"}`, color: mode === k ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <div style={{ padding: "20px" }}>
-            {mode === "url"
-              ? <Field value={input} onChange={setInput} placeholder="https://careers.company.com/job/12345" mono />
-              : <Field value={input} onChange={setInput} placeholder="Paste the full job description — title, responsibilities, requirements, everything..." multiline rows={10} />
-            }
-          </div>
-          {error && (
-            <div style={{ margin: "0 20px 20px", padding: "12px 16px", background: "#1a0d0d", border: `1px solid ${C.red}44`, borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
-              <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.red, margin: 0, flex: 1 }}>⚠ {error}{retryCountdown > 0 ? ` ${retryCountdown}s` : ""}</p>
-              {retryCountdown > 0 && (
-                <button onClick={() => { clearInterval(retryTimer.current); setRetryCountdown(0); setError(""); }} style={{ background: "transparent", border: `1px solid ${C.red}44`, borderRadius: "5px", padding: "4px 10px", fontFamily: T.mono, fontSize: "10px", color: C.red, cursor: "pointer", flexShrink: 0, letterSpacing: "0.06em" }}>Cancel</button>
-              )}
-            </div>
-          )}
-          <div style={{ padding: "0 20px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.1em" }}>TONE</span>
-              {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
-                <button key={key} onClick={() => setTone(key)} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0d1a10" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
-                  <span>{cfg.icon}</span> {cfg.label}
-                </button>
-              ))}
-            </div>
-            <Btn onClick={analyze} disabled={loading || input.trim().length < 10}>
-              {loading ? "Analyzing..." : "Analyze →"}
-            </Btn>
-          </div>
+    <ResultBubble>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", overflow: "hidden" }}>
+        {/* Tab header */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${C.border}` }}>
+          {tabs.map(({ key, label, color }) => (
+            <button key={key} onClick={() => setTab(key)} style={{ flex: 1, padding: "13px 18px", background: "transparent", border: "none", borderBottom: `2px solid ${tab === key ? color : "transparent"}`, color: tab === key ? color : C.textDim, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>
+              {label}
+            </button>
+          ))}
         </div>
-      )}
 
-      {/* Loading */}
-      {phase === "loading" && (
-        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "44px", textAlign: "center" }}>
-          <div style={{ display: "flex", gap: "5px", justifyContent: "center", marginBottom: "22px" }}>
-            {[0,1,2,3].map(i => (
-              <div key={i} style={{ width: "4px", height: "22px", background: C.accent, borderRadius: "2px", animation: `bar 1.2s ease-in-out ${i*0.15}s infinite` }} />
-            ))}
-          </div>
-          <style>{`@keyframes bar{0%,100%{transform:scaleY(0.35);opacity:0.25}50%{transform:scaleY(1);opacity:1}}`}</style>
-          <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", margin: 0 }}>{PHASES[phaseIdx]}</p>
-        </div>
-      )}
-
-      {/* Results — Chat Style */}
-      {phase === "done" && result && (
-        <div ref={resultRef} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-
-          {/* ── USER BUBBLE ── */}
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "18px 18px 4px 18px", padding: "12px 18px", maxWidth: "80%" }}>
-              <p style={{ fontFamily: T.mono, fontSize: "12px", color: C.textSub, margin: 0, wordBreak: "break-all", lineHeight: 1.5 }}>{input.trim().slice(0, 120)}{input.trim().length > 120 ? "..." : ""}</p>
-            </div>
-          </div>
-
-          {/* ── INFLOW BUBBLE 1: VERDICT + SCORES ── */}
-          <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-            <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.surface, border: `1px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
-              <svg width="14" height="14" viewBox="0 0 48 48"><circle cx="24" cy="13" r="4.5" fill={C.accent}/><path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/></svg>
-            </div>
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px" }}>
-
-              {/* Score row */}
-              <div style={{ display: "flex", gap: "10px" }}>
-                {[{ label: "Recruiter", score: scores.recruiter }, { label: "Hiring Mgr", score: scores.hm }].map(({ label, score }) => (
-                  <div key={label} style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "14px 16px" }}>
-                    <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px" }}>{label}</p>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "6px", marginBottom: "8px" }}>
-                      <span style={{ fontFamily: T.display, fontSize: "36px", color: scoreColor(score), fontWeight: 800, lineHeight: 1 }}>{score ?? "—"}</span>
-                      <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>/10</span>
-                    </div>
-                    <div style={{ height: "3px", background: C.border2, borderRadius: "2px", marginBottom: "8px" }}>
-                      {score && <div style={{ height: "100%", width: `${score * 10}%`, background: scoreColor(score), borderRadius: "2px" }} />}
-                    </div>
-                    <p style={{ fontFamily: T.body, fontSize: "12px", color: scoreColor(score), margin: 0 }}>{scoreLabel(score)}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Odds funnel */}
-              {odds && (
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "14px 18px" }}>
-                  <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 12px" }}>Interview Odds</p>
-                  <div style={{ display: "flex", gap: "6px", alignItems: "flex-end" }}>
-                    {odds.map(({ label, pct }) => (
-                      <div key={label} style={{ flex: 1, textAlign: "center" }}>
-                        <div style={{ height: "48px", background: C.surface2, borderRadius: "6px", display: "flex", alignItems: "flex-end", overflow: "hidden", marginBottom: "6px" }}>
-                          <div style={{ width: "100%", height: `${Math.max(pct, 4)}%`, background: pct >= 50 ? C.accent : pct >= 20 ? C.yellow : C.red, opacity: 0.8, borderRadius: "4px 4px 0 0" }} />
-                        </div>
-                        <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, margin: "0 0 2px", letterSpacing: "0.08em" }}>{label}</p>
-                        <p style={{ fontFamily: T.mono, fontSize: "11px", color: pct >= 50 ? C.accent : pct >= 20 ? C.yellow : C.red, margin: 0, fontWeight: 600 }}>{pct}%</p>
-                      </div>
-                    ))}
-                  </div>
+        {/* Strengths */}
+        {tab === "strengths" && (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {allStrengths.map((s, i) => (
+              <div key={i} style={{ padding: "16px 20px", borderBottom: i < allStrengths.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                  <div style={{ width: "3px", height: "12px", background: C.accent, borderRadius: "2px" }} />
+                  <p style={{ fontFamily: T.display, fontSize: "14px", color: C.text, margin: 0, fontWeight: 700 }}>{s.name}</p>
                 </div>
-              )}
-
-              {/* Bottom line verdict */}
-              {verdict?.bottomLine && (
-                <div style={{ background: "#0d1a10", border: `1px solid ${C.accent}33`, borderRadius: "12px", padding: "14px 18px" }}>
-                  <p style={{ fontFamily: T.body, fontSize: "15px", color: C.text, margin: 0, lineHeight: 1.75 }}>
-                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.1em", marginRight: "8px" }}>BOTTOM LINE</span>
-                    {verdict.bottomLine}
-                  </p>
-                </div>
-              )}
-
-              {/* Tone toggle */}
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.1em" }}>TONE</span>
-                {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
-                  <button key={key} onClick={() => { setTone(key); analyze(key); }} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0d1a10" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
-                    <span>{cfg.icon}</span> {cfg.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* ── INFLOW BUBBLE 2: RESUME EDITS ── */}
-          {edits.length > 0 && (
-            <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.surface, border: `1px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
-                <svg width="14" height="14" viewBox="0 0 48 48"><circle cx="24" cy="13" r="4.5" fill={C.accent}/><path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/></svg>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", overflow: "hidden" }}>
-                  {/* Edit nav header */}
-                  <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <div style={{ width: "3px", height: "12px", background: C.accent, borderRadius: "2px" }} />
-                      <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.12em", textTransform: "uppercase" }}>Resume Edits</span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>{activeEdit + 1} / {edits.length}</span>
-                      <button onClick={() => setActiveEdit(a => Math.max(0, a - 1))} disabled={activeEdit === 0} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: activeEdit === 0 ? C.textDim : C.textSub, cursor: activeEdit === 0 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>←</button>
-                      <button onClick={() => setActiveEdit(a => Math.min(edits.length - 1, a + 1))} disabled={activeEdit === edits.length - 1} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: activeEdit === edits.length - 1 ? C.textDim : C.textSub, cursor: activeEdit === edits.length - 1 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>→</button>
-                    </div>
-                  </div>
-                  {/* Active edit */}
-                  {edits[activeEdit] && (
-                    <div>
-                      <div style={{ padding: "14px 18px", background: "#150a0a", borderBottom: `1px solid ${C.border}` }}>
-                        <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.red, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.8 }}>BEFORE</p>
-                        <p style={{ fontFamily: T.body, fontSize: "14px", color: "#FCA5A5", margin: 0, lineHeight: 1.7 }}>{edits[activeEdit].orig}</p>
-                      </div>
-                      <div style={{ padding: "14px 18px", background: "#0a150a", borderBottom: `1px solid ${C.border}` }}>
-                        <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.8 }}>AFTER</p>
-                        <p style={{ fontFamily: T.body, fontSize: "14px", color: C.mint, margin: 0, lineHeight: 1.7 }}>{edits[activeEdit].sugg}</p>
-                      </div>
-                      <div style={{ padding: "12px 18px", background: C.surface2, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
-                        <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.6, fontStyle: "italic", flex: 1 }}>↳ {edits[activeEdit].why || "Stronger action verb + measurable outcome"}</p>
-                        <button onClick={() => navigator.clipboard?.writeText(edits[activeEdit].sugg)} style={{ background: C.surface, border: `1px solid ${C.border2}`, borderRadius: "6px", padding: "6px 14px", fontFamily: T.mono, fontSize: "10px", color: C.accent, cursor: "pointer", letterSpacing: "0.08em", flexShrink: 0 }}>Copy ↗</button>
-                      </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {s.recruiter && (
+                    <div style={{ background: C.surface2, borderRadius: "6px", padding: "10px 14px" }}>
+                      <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.1em", margin: "0 0 4px" }}>RECRUITER READS</p>
+                      <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.65 }}>{s.recruiter}</p>
                     </div>
                   )}
-                  {/* Edit dots */}
-                  <div style={{ padding: "10px 18px", display: "flex", gap: "6px", justifyContent: "center" }}>
-                    {edits.map((_, i) => (
-                      <button key={i} onClick={() => setActiveEdit(i)} style={{ width: i === activeEdit ? "18px" : "6px", height: "6px", borderRadius: "3px", background: i === activeEdit ? C.accent : C.border2, border: "none", cursor: "pointer", transition: "width 0.2s, background 0.2s", padding: 0 }} />
-                    ))}
-                  </div>
+                  {s.hm && (
+                    <div style={{ background: C.surface2, borderRadius: "6px", padding: "10px 14px" }}>
+                      <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.yellow, letterSpacing: "0.1em", margin: "0 0 4px" }}>HM READS</p>
+                      <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.65 }}>{s.hm}</p>
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          )}
-
-          {/* ── INFLOW BUBBLE 3: NEXT STEPS ── */}
-          {nextSteps.length > 0 && (
-            <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.surface, border: `1px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
-                <svg width="14" height="14" viewBox="0 0 48 48"><circle cx="24" cy="13" r="4.5" fill={C.accent}/><path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/></svg>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", padding: "16px 20px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
-                    <div style={{ width: "3px", height: "12px", background: C.yellow, borderRadius: "2px" }} />
-                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.yellow, letterSpacing: "0.12em", textTransform: "uppercase" }}>Before You Apply</span>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                    {nextSteps.map((step, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
-                        <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: `1.5px solid ${C.border2}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "2px" }}>
-                          <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim }}>{i + 1}</span>
-                        </div>
-                        <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, margin: 0, lineHeight: 1.7 }}>{step}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── FULL ANALYSIS TOGGLE ── */}
-          <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-            <div style={{ width: "28px", flexShrink: 0 }} />
-            <div style={{ flex: 1 }}>
-              <button onClick={() => setShowFullAnalysis(s => !s)} style={{ width: "100%", background: "transparent", border: `1px solid ${C.border}`, borderRadius: "10px", padding: "12px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", marginBottom: showFullAnalysis ? "10px" : "0" }}>
-                <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textSub, letterSpacing: "0.1em", textTransform: "uppercase" }}>Full Analysis (7 steps)</span>
-                <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>{showFullAnalysis ? "▲ Hide" : "▼ Show"}</span>
-              </button>
-              {showFullAnalysis && (
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "28px 32px" }}>
-                  <StepAccordion text={result} />
-                </div>
-              )}
-            </div>
+            ))}
           </div>
+        )}
 
-          {/* ── AUTO-SAVED + ACTIONS ── */}
-          <div style={{ display: "flex", gap: "10px", alignItems: "center", paddingLeft: "38px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#0d1a10", border: `1px solid ${C.accent}22`, borderRadius: "20px", padding: "6px 14px" }}>
-              <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: C.accent }} />
-              <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em" }}>Saved to Pipeline</span>
-            </div>
-            <button onClick={reset} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>New Analysis</button>
-            <button onClick={() => navigator.clipboard?.writeText(result)} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>Copy</button>
-            <button onClick={() => { const blob = new Blob([result], { type: "text/plain;charset=utf-8;" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); const fname = `inflow-${(jobTitle||"analysis").replace(/[^a-z0-9]/gi,"-").toLowerCase()}-${new Date().toISOString().slice(0,10)}.txt`; a.href=url; a.download=fname; a.click(); URL.revokeObjectURL(url); }} style={{ background: "transparent", border: `1px solid ${C.border}`, borderRadius: "20px", padding: "6px 16px", fontFamily: T.mono, fontSize: "10px", color: C.textDim, cursor: "pointer", letterSpacing: "0.08em" }}>↓ Save</button>
+        {/* Transferable experience */}
+        {tab === "transferable" && (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {allTransferable.length === 0 ? (
+              <div style={{ padding: "20px", textAlign: "center" }}>
+                <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0 }}>No directly transferable experience identified for this role.</p>
+              </div>
+            ) : allTransferable.map((t, i) => (
+              <div key={i} style={{ padding: "16px 20px", borderBottom: i < allTransferable.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                  <div style={{ width: "3px", height: "12px", background: C.blue, borderRadius: "2px" }} />
+                  <p style={{ fontFamily: T.display, fontSize: "14px", color: C.text, margin: 0, fontWeight: 700 }}>{t.name}</p>
+                </div>
+                {t.how && (
+                  <div style={{ background: C.surface2, borderRadius: "6px", padding: "10px 14px" }}>
+                    <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.blue, letterSpacing: "0.1em", margin: "0 0 4px" }}>HOW IT TRANSFERS</p>
+                    <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.65 }}>{t.how}</p>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
+        )}
 
+        {/* Risks */}
+        {tab === "risks" && (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {(risks || []).map((r, i) => (
+              <div key={i} style={{ padding: "16px 20px", borderBottom: i < risks.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "10px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <div style={{ width: "3px", height: "12px", background: C.orange, borderRadius: "2px" }} />
+                    <p style={{ fontFamily: T.display, fontSize: "14px", color: C.text, margin: 0, fontWeight: 700 }}>{r.name}</p>
+                  </div>
+                  {r.likelihood && (
+                    <span style={{ fontFamily: T.mono, fontSize: "9px", color: likelihoodColor(r.likelihood), background: `${likelihoodColor(r.likelihood)}15`, border: `1px solid ${likelihoodColor(r.likelihood)}33`, borderRadius: "4px", padding: "3px 8px", letterSpacing: "0.08em", flexShrink: 0 }}>
+                      {r.likelihood.toUpperCase()} LIKELIHOOD
+                    </span>
+                  )}
+                </div>
+                {r.why && <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: "0 0 8px", lineHeight: 1.65, paddingLeft: "11px" }}>{r.why}</p>}
+                {r.mitigation && (
+                  <div style={{ paddingLeft: "11px" }}>
+                    <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.mint, letterSpacing: "0.1em", margin: "0 0 3px" }}>MITIGATION</p>
+                    <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: 0, lineHeight: 1.6 }}>{r.mitigation}</p>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </ResultBubble>
+  );
+}
+
+// ─── RESUME IMPROVEMENTS BUBBLE ───────────────────────────────────────────────
+function ImprovementsBubble({ improvements }) {
+  const [active, setActive] = useState(0);
+  if (!improvements?.length) return null;
+  const imp = improvements[active];
+
+  return (
+    <ResultBubble>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", overflow: "hidden" }}>
+        {/* Header */}
+        <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style={{ width: "3px", height: "12px", background: C.accent, borderRadius: "2px" }} />
+            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.12em", textTransform: "uppercase" }}>Resume Improvements</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>{active + 1} / {improvements.length}</span>
+            <button onClick={() => setActive(a => Math.max(0, a - 1))} disabled={active === 0} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === 0 ? C.textDim : C.textSub, cursor: active === 0 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>←</button>
+            <button onClick={() => setActive(a => Math.min(improvements.length - 1, a + 1))} disabled={active === improvements.length - 1} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === improvements.length - 1 ? C.textDim : C.textSub, cursor: active === improvements.length - 1 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>→</button>
+          </div>
         </div>
-      )}
-    </div>
+
+        {/* Content */}
+        {imp && (
+          <div>
+            {imp.current && (
+              <div style={{ padding: "14px 18px", background: "#150a0a", borderBottom: `1px solid ${C.border}` }}>
+                <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.red, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.8 }}>CURRENT</p>
+                <p style={{ fontFamily: T.body, fontSize: "14px", color: "#FCA5A5", margin: 0, lineHeight: 1.7 }}>{imp.current}</p>
+              </div>
+            )}
+            {(imp.problem || imp.issue) && (
+              <div style={{ padding: "10px 18px", background: "#1a1400", borderBottom: `1px solid ${C.border}` }}>
+                <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.yellow, letterSpacing: "0.1em", margin: "0 0 4px", opacity: 0.8 }}>PROBLEM</p>
+                <p style={{ fontFamily: T.body, fontSize: "13px", color: C.yellow, margin: 0, lineHeight: 1.6, opacity: 0.9 }}>{imp.problem || imp.issue}</p>
+              </div>
+            )}
+            {imp.improved && (
+              <div style={{ padding: "14px 18px", background: "#0a150a", borderBottom: `1px solid ${C.border}` }}>
+                <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent, letterSpacing: "0.1em", margin: "0 0 6px", opacity: 0.8 }}>IMPROVED</p>
+                <p style={{ fontFamily: T.body, fontSize: "14px", color: C.mint, margin: 0, lineHeight: 1.7 }}>{imp.improved}</p>
+              </div>
+            )}
+            <div style={{ padding: "12px 18px", background: C.surface2, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.6, fontStyle: "italic", flex: 1 }}>↳ {imp.why || "Stronger signal for this specific role"}</p>
+              <button onClick={() => navigator.clipboard?.writeText(imp.improved || "")} style={{ background: C.surface, border: `1px solid ${C.border2}`, borderRadius: "6px", padding: "6px 14px", fontFamily: T.mono, fontSize: "10px", color: C.accent, cursor: "pointer", letterSpacing: "0.08em", flexShrink: 0 }}>Copy ↗</button>
+            </div>
+          </div>
+        )}
+
+        {/* Dots */}
+        <div style={{ padding: "10px 18px", display: "flex", gap: "6px", justifyContent: "center" }}>
+          {improvements.map((_, i) => (
+            <button key={i} onClick={() => setActive(i)} style={{ width: i === active ? "18px" : "6px", height: "6px", borderRadius: "3px", background: i === active ? C.accent : C.border2, border: "none", cursor: "pointer", transition: "width 0.2s, background 0.2s", padding: 0 }} />
+          ))}
+        </div>
+      </div>
+    </ResultBubble>
+  );
+}
+
+// ─── INTERVIEW RISK BUBBLE ────────────────────────────────────────────────────
+function InterviewRiskBubble({ questions }) {
+  const [open, setOpen] = useState(0);
+  if (!questions?.length) return null;
+
+  return (
+    <ResultBubble>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", overflow: "hidden" }}>
+        <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ width: "3px", height: "12px", background: C.blue, borderRadius: "2px" }} />
+          <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.blue, letterSpacing: "0.12em", textTransform: "uppercase" }}>Interview Risk — Questions They'll Ask</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {questions.map((q, i) => {
+            const isOpen = open === i;
+            return (
+              <div key={i} style={{ borderBottom: i < questions.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                <button onClick={() => setOpen(isOpen ? -1 : i)} style={{ width: "100%", padding: "14px 18px", background: "transparent", border: "none", display: "flex", alignItems: "flex-start", justifyContent: "space-between", cursor: "pointer", gap: "12px", textAlign: "left" }}>
+                  <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                    <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.blue, letterSpacing: "0.1em", flexShrink: 0, paddingTop: "3px" }}>Q{i + 1}</span>
+                    <p style={{ fontFamily: T.body, fontSize: "14px", color: isOpen ? C.text : C.textMid, margin: 0, lineHeight: 1.6, fontWeight: isOpen ? 500 : 400 }}>{q.question}</p>
+                  </div>
+                  <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, flexShrink: 0 }}>{isOpen ? "▲" : "▼"}</span>
+                </button>
+                {isOpen && q.coaching && (
+                  <div style={{ padding: "0 18px 16px 18px", paddingLeft: "37px" }}>
+                    <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px" }}>
+                      <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.mint, letterSpacing: "0.1em", margin: "0 0 6px" }}>COACHING</p>
+                      <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.75 }}>{q.coaching}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </ResultBubble>
+  );
+}
+
+// ─── VERDICT BUBBLE ───────────────────────────────────────────────────────────
+function VerdictBubble({ verdict }) {
+  if (!verdict?.bottomLine && !verdict?.body) return null;
+  return (
+    <ResultBubble>
+      <div style={{ background: "#0d1a10", border: `1px solid ${C.accent}33`, borderRadius: "4px 18px 18px 18px", padding: "18px 20px" }}>
+        {verdict.body && (
+          <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, margin: "0 0 12px", lineHeight: 1.8 }}>{verdict.body}</p>
+        )}
+        {verdict.bottomLine && (
+          <p style={{ fontFamily: T.body, fontSize: "15px", color: C.text, margin: 0, lineHeight: 1.75 }}>
+            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.1em", marginRight: "8px" }}>BOTTOM LINE</span>
+            {verdict.bottomLine}
+          </p>
+        )}
+      </div>
+    </ResultBubble>
+  );
+}
+
+// ─── DECISION CONFIDENCE BUBBLE ───────────────────────────────────────────────
+function DecisionConfidenceBubble({ confidence }) {
+  if (!confidence?.level) return null;
+  const colors = { High: C.accent, Medium: C.yellow, Low: C.red };
+  const bgs    = { High: "#0d1a10", Medium: "#1a1800", Low: "#1a0d0d" };
+  const col = colors[confidence.level] || C.textDim;
+  const bg  = bgs[confidence.level]   || C.surface;
+  return (
+    <ResultBubble>
+      <div style={{ background: bg, border: `1px solid ${col}33`, borderRadius: "4px 18px 18px 18px", padding: "18px 20px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: confidence.reason ? "12px" : 0 }}>
+          <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.1em" }}>DECISION CONFIDENCE</span>
+          <span style={{ fontFamily: T.mono, fontSize: "11px", color: col, background: `${col}18`, border: `1px solid ${col}44`, borderRadius: "4px", padding: "3px 10px", letterSpacing: "0.08em" }}>{confidence.level.toUpperCase()}</span>
+        </div>
+        {confidence.reason && (
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.7 }}>{confidence.reason}</p>
+        )}
+      </div>
+    </ResultBubble>
   );
 }
 
@@ -1041,60 +1382,50 @@ function EditJobModal({ job, onSave, onClose }) {
     notes:   job.notes   || "",
     status:  job.status  || "saved",
   });
-  const [rerunning, setRerunning] = useState(false);
+  const [rerunning, setRerunning]   = useState(false);
   const [rerunError, setRerunError] = useState("");
   const [rerunStatus, setRerunStatus] = useState("");
 
   const save = () => {
     if (!draft.title.trim()) return;
-    onSave({ ...job, ...draft, status: draft.status, ...stampDate(job, draft.status) });
+    onSave({ ...job, ...draft, ...stampDate(job, draft.status) });
   };
 
   const rerunAnalysis = async () => {
-    const apiKey = localStorage.getItem(KEYS.apiKey);
+    const apiKey   = localStorage.getItem(KEYS.apiKey);
     const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
-    const resume = localStorage.getItem(KEYS.resume);
+    const resume   = localStorage.getItem(KEYS.resume);
     const targetUrl = draft.url || job.url;
-    if (!apiKey) { setRerunError("No API key. Go to Settings."); return; }
-    if (!resume) { setRerunError("No resume found."); return; }
+    if (!apiKey)  { setRerunError("No API key. Go to Settings."); return; }
+    if (!resume)  { setRerunError("No resume found."); return; }
     if (!targetUrl && !job.analysis) { setRerunError("No URL to re-analyze."); return; }
 
     setRerunning(true); setRerunError(""); setRerunStatus("Fetching job posting...");
-
     try {
       const userMsg = targetUrl
         ? `Fetch and analyze this job posting URL: ${targetUrl}`
         : `Re-analyze this job based on the original analysis context:\n\n${job.analysis?.slice(0, 1000)}`;
 
       const body = {
-        model: "claude-sonnet-4-6", max_tokens: 4000,
+        model: "claude-sonnet-4-6", max_tokens: 6000,
         system: ANALYSIS_PROMPT(resume, "brutal"),
         messages: [{ role: "user", content: userMsg }],
       };
       if (targetUrl) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
 
-      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, '') : "https://api.anthropic.com/v1/messages";
-      const headers = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, "") : "https://api.anthropic.com/v1/messages";
+      const headers  = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
       if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
 
       setRerunStatus("Analyzing...");
-      const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
+      const res  = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.error) throw new Error(data.error.message);
-      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "";
+      const text   = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "";
       const parsed = parseScores(text);
+      const tier   = parseTier(text) || tierFromScores(parsed.recruiter, parsed.hm);
 
-      // Save updated job with fresh analysis and scores
-      onSave({
-        ...job,
-        ...draft,
-        analysis: text,
-        recruiterScore: parsed.recruiter ?? job.recruiterScore,
-        hmScore: parsed.hm ?? job.hmScore,
-        updatedRecruiterScore: null,
-        updatedHmScore: null,
-        updatedScoreSummary: "",
-      });
+      onSave({ ...job, ...draft, analysis: text, recruiterScore: parsed.recruiter ?? job.recruiterScore, hmScore: parsed.hm ?? job.hmScore, tier: tier?.label || job.tier });
     } catch (err) {
       setRerunError(err.message || "Re-analysis failed.");
       setRerunning(false);
@@ -1104,34 +1435,16 @@ function EditJobModal({ job, onSave, onClose }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "#000000ee", backdropFilter: "blur(12px)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
       <div style={{ background: C.surface, border: `1px solid ${C.border2}`, borderRadius: "16px", width: "100%", maxWidth: "520px", maxHeight: "90vh", overflowY: "auto" }}>
-
-        {/* Header */}
         <div style={{ padding: "22px 28px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <Label color={C.accent}>Edit Job</Label>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: C.textDim, cursor: "pointer", fontFamily: T.mono, fontSize: "16px", lineHeight: 1 }}>✕</button>
         </div>
 
         <div style={{ padding: "16px 28px 28px", display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div><Label>Job Title</Label><Field value={draft.title} onChange={v => setDraft(p => ({ ...p, title: v }))} placeholder="Job Title *" /></div>
+          <div><Label>Company</Label><Field value={draft.company} onChange={v => setDraft(p => ({ ...p, company: v }))} placeholder="Company" /></div>
+          <div><Label>Job URL</Label><Field value={draft.url} onChange={v => setDraft(p => ({ ...p, url: v }))} placeholder="https://..." mono /></div>
 
-          {/* Title */}
-          <div>
-            <Label>Job Title</Label>
-            <Field value={draft.title} onChange={v => setDraft(p => ({ ...p, title: v }))} placeholder="Job Title *" />
-          </div>
-
-          {/* Company */}
-          <div>
-            <Label>Company</Label>
-            <Field value={draft.company} onChange={v => setDraft(p => ({ ...p, company: v }))} placeholder="Company" />
-          </div>
-
-          {/* URL */}
-          <div>
-            <Label>Job URL</Label>
-            <Field value={draft.url} onChange={v => setDraft(p => ({ ...p, url: v }))} placeholder="https://..." mono />
-          </div>
-
-          {/* Status */}
           <div>
             <Label>Status</Label>
             <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
@@ -1143,28 +1456,18 @@ function EditJobModal({ job, onSave, onClose }) {
             </div>
           </div>
 
-          {/* Notes */}
-          <div>
-            <Label>Notes</Label>
-            <Field value={draft.notes} onChange={v => setDraft(p => ({ ...p, notes: v }))} placeholder="Notes..." multiline rows={4} />
-          </div>
+          <div><Label>Notes</Label><Field value={draft.notes} onChange={v => setDraft(p => ({ ...p, notes: v }))} placeholder="Notes..." multiline rows={4} /></div>
 
-          {/* Re-run analysis */}
+          {/* Re-run */}
           <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "16px 18px" }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: rerunError ? "10px" : "0" }}>
               <div>
                 <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Re-run Analysis</p>
-                <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.5 }}>
-                  {rerunning ? rerunStatus : "Fetch fresh scores and analysis using the current URL and your base resume."}
-                </p>
+                <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.5 }}>{rerunning ? rerunStatus : "Fetch fresh scores and analysis using the current URL and your base resume."}</p>
               </div>
-              <Btn small onClick={rerunAnalysis} disabled={rerunning}>
-                {rerunning ? "Running..." : "⚡ Re-run"}
-              </Btn>
+              <Btn small onClick={rerunAnalysis} disabled={rerunning}>{rerunning ? "Running..." : "⚡ Re-run"}</Btn>
             </div>
-            {rerunError && (
-              <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.red, margin: "8px 0 0", letterSpacing: "0.06em" }}>⚠ {rerunError}</p>
-            )}
+            {rerunError && <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.red, margin: "8px 0 0", letterSpacing: "0.06em" }}>⚠ {rerunError}</p>}
           </div>
 
           {/* Scores preview */}
@@ -1180,43 +1483,132 @@ function EditJobModal({ job, onSave, onClose }) {
             </div>
           )}
 
-          {/* Actions */}
           <div style={{ display: "flex", gap: "12px", paddingTop: "4px" }}>
             <Btn onClick={save} disabled={!draft.title.trim()}>Save Changes</Btn>
             <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
           </div>
-
         </div>
       </div>
     </div>
   );
 }
 
+// ─── RESCORE CARD ─────────────────────────────────────────────────────────────
+function ReScoreCard({ job, updatedResume, onUpdate }) {
+  const [scoring, setScoring] = useState(false);
+  const [error, setError]     = useState("");
+  const hasUpdated = !!updatedResume?.trim();
+  const hasScores  = job.updatedRecruiterScore != null || job.updatedHmScore != null;
+
+  const delta = (orig, updated) => {
+    if (orig == null || updated == null) return null;
+    const d = updated - orig;
+    if (d === 0) return <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>→ {updated}</span>;
+    return <span style={{ fontFamily: T.mono, fontSize: "10px", color: d > 0 ? C.accent : C.red }}>{d > 0 ? `↑${d}` : `↓${Math.abs(d)}`} → {updated}</span>;
+  };
+
+  const runRescore = async () => {
+    const apiKey   = localStorage.getItem(KEYS.apiKey);
+    const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
+    if (!apiKey)    { setError("No API key. Go to Settings."); return; }
+    if (!hasUpdated){ setError("No updated resume saved. Go to the Resume tab first."); return; }
+
+    setScoring(true); setError("");
+    try {
+      const prompt = `You are a senior recruiter. Re-score this candidate for the job below using their UPDATED resume.
+
+Return ONLY this exact format — nothing else:
+RECRUITER SCORE: [number 1-10]
+HIRING MANAGER SCORE: [number 1-10]
+CHANGE SUMMARY: [one sentence explaining the key improvement or remaining gap]
+
+ORIGINAL RECRUITER SCORE: ${job.recruiterScore ?? "unknown"}
+ORIGINAL HM SCORE: ${job.hmScore ?? "unknown"}
+
+UPDATED RESUME:
+${updatedResume}
+
+JOB CONTEXT (from original analysis):
+${job.analysis?.slice(0, 800) || "No analysis available."}`;
+
+      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, "") : "https://api.anthropic.com/v1/messages";
+      const headers  = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+      if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
+
+      const res  = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 200, messages: [{ role: "user", content: prompt }] }) });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      const text   = data.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
+      const rMatch = text.match(/RECRUITER SCORE:\s*(\d+(?:\.\d+)?)/i);
+      const hMatch = text.match(/HIRING MANAGER SCORE:\s*(\d+(?:\.\d+)?)/i);
+      const sMatch = text.match(/CHANGE SUMMARY:\s*(.+)/i);
+      onUpdate({ ...job, updatedRecruiterScore: rMatch ? parseFloat(rMatch[1]) : null, updatedHmScore: hMatch ? parseFloat(hMatch[1]) : null, updatedScoreSummary: sMatch ? sMatch[1].trim() : "", updatedScoreDate: now() });
+    } catch (err) {
+      setError(err.message || "Re-score failed.");
+    }
+    setScoring(false);
+  };
+
+  return (
+    <div style={{ marginBottom: "18px" }}>
+      <Label>Projected Score with Updated Resume</Label>
+      {!hasUpdated ? (
+        <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px" }}>
+          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.6 }}>
+            No updated resume saved. Go to the <strong style={{ color: C.textSub }}>Resume</strong> tab, paste your edited resume, and save it — then come back to re-score.
+          </p>
+        </div>
+      ) : (
+        <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", overflow: "hidden" }}>
+          {hasScores ? (
+            <div style={{ padding: "14px 18px" }}>
+              <div style={{ display: "flex", gap: "24px", marginBottom: "10px" }}>
+                {[{ l: "Recruiter", orig: job.recruiterScore, upd: job.updatedRecruiterScore }, { l: "Hiring Mgr", orig: job.hmScore, upd: job.updatedHmScore }].map(({ l, orig, upd }) => (
+                  <div key={l}>
+                    <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>{l}</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ fontFamily: T.display, fontSize: "22px", color: scoreColor(upd), fontWeight: 800 }}>{upd ?? "—"}</span>
+                      <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>/10</span>
+                      {delta(orig, upd)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {job.updatedScoreSummary && <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: "0 0 12px", lineHeight: 1.6, fontStyle: "italic" }}>{job.updatedScoreSummary}</p>}
+              <Btn small onClick={runRescore} disabled={scoring}>{scoring ? "Re-scoring..." : "Re-score Again"}</Btn>
+            </div>
+          ) : (
+            <div style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: 0, lineHeight: 1.5 }}>Updated resume saved. Run a re-score to see projected improvement.</p>
+              <Btn small onClick={runRescore} disabled={scoring}>{scoring ? "Scoring..." : "Re-score →"}</Btn>
+            </div>
+          )}
+          {error && <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.red, margin: "0 18px 14px", letterSpacing: "0.06em" }}>⚠ {error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── TRACKER PAGE ─────────────────────────────────────────────────────────────
 function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }) {
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter]       = useState("all");
   const [expandedId, setExpandedId] = useState(null);
   const [editingNotes, setEditingNotes] = useState(null);
   const [notesDraft, setNotesDraft] = useState("");
-  const [showAdd, setShowAdd] = useState(false);
-  const [editingJob, setEditingJob] = useState(null); // job being edited
-  const [newJob, setNewJob] = useState({ title: "", company: "", url: "", status: "saved", notes: "" });
+  const [showAdd, setShowAdd]     = useState(false);
+  const [editingJob, setEditingJob] = useState(null);
+  const [newJob, setNewJob]       = useState({ title: "", company: "", url: "", status: "saved", notes: "" });
 
-  const activeJobs = jobs.filter(j => j.status !== "rejected");
+  const activeJobs   = jobs.filter(j => j.status !== "rejected");
   const rejectedJobs = jobs.filter(j => j.status === "rejected");
-  const filtered = filter === "all"
-    ? activeJobs
-    : filter === "rejected"
-    ? rejectedJobs
-    : jobs.filter(j => j.status === filter);
+  const filtered = filter === "all" ? activeJobs : filter === "rejected" ? rejectedJobs : jobs.filter(j => j.status === filter);
 
-  const today = new Date();
   const stats = {
-    total:      activeJobs.length,
-    applied:    activeJobs.filter(j => ["applied","screen","interview","offer"].includes(j.status)).length,
-    active:     activeJobs.filter(j => ["screen","interview"].includes(j.status)).length,
-    offers:     activeJobs.filter(j => j.status === "offer").length,
-    followUps:  activeJobs.filter(j => j.followUpDate && new Date(j.followUpDate) <= today).length,
+    total:   activeJobs.length,
+    applied: activeJobs.filter(j => ["applied","screen","interview","offer"].includes(j.status)).length,
+    active:  activeJobs.filter(j => ["screen","interview"].includes(j.status)).length,
+    offers:  activeJobs.filter(j => j.status === "offer").length,
   };
 
   const changeStatus = (job, s) => onUpdateJob({ ...job, status: s, ...stampDate(job, s) });
@@ -1224,22 +1616,18 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
   const addJob = () => {
     if (!newJob.title.trim()) return;
     const t = now();
-    onAddJob({ id: uid(), ...newJob, recruiterScore: null, hmScore: null, analysis: "", interviewNotes: "", followUpDate: null, skills: [], workArrangement: "", employmentType: "", deadline: "", recruiterContact: "", location: "", salary: "", jobId: "", dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
+    onAddJob({ id: uid(), ...newJob, recruiterScore: null, hmScore: null, tier: null, analysis: "", dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
     setNewJob({ title: "", company: "", url: "", status: "saved", notes: "" });
     setShowAdd(false);
   };
 
   const exportCSV = () => {
     if (!jobs.length) return;
-    const cols = [
-      "Title", "Company", "Status", "Recruiter Score", "HM Score",
-      "Date Added", "Date Applied", "Date Screen", "Date Interview",
-      "Date Offer", "Date Rejected", "URL", "Notes"
-    ];
+    const cols = ["Title","Company","Status","Tier","Recruiter Score","HM Score","Date Added","Date Applied","Date Screen","Date Interview","Date Offer","Date Rejected","URL","Notes"];
     const escape = (v) => `"${String(v || "").replace(/"/g, '""')}"`;
     const toRows = (list) => list.map(j => [
       escape(j.title), escape(j.company), escape(SM[j.status]?.label || j.status),
-      escape(j.recruiterScore ?? ""), escape(j.hmScore ?? ""),
+      escape(j.tier || ""), escape(j.recruiterScore ?? ""), escape(j.hmScore ?? ""),
       escape(fmtDate(j.dateAdded) || ""), escape(fmtDate(j.dateApplied) || ""),
       escape(fmtDate(j.dateScreen) || ""), escape(fmtDate(j.dateInterview) || ""),
       escape(fmtDate(j.dateOffer) || ""), escape(fmtDate(j.dateRejected) || ""),
@@ -1248,9 +1636,8 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
     const header = cols.map(c => `"${c}"`).join(",");
     const dl = (rows, name) => {
       const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
+      const url  = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
     };
     const date = new Date().toISOString().slice(0, 10);
     dl(toRows(activeJobs), `inflow-active-${date}.csv`);
@@ -1258,24 +1645,20 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
   };
 
   const cardSub = (job) => {
-    const st = SM[job.status];
-    const date = st ? job[st.dateKey] : null;
+    const st = SM[job.status]; const date = st ? job[st.dateKey] : null;
     if (date) return `${st.label} · ${fmtShort(date)}`;
     return job.dateAdded ? `Added ${fmtShort(job.dateAdded)}` : "";
   };
 
   return (
     <div style={{ maxWidth: "800px", margin: "0 auto", padding: "48px 24px 0" }}>
-      {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "36px" }}>
         <div>
           <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 12px" }}>Pipeline</p>
           <h1 style={{ fontFamily: T.display, fontSize: "clamp(26px,4vw,38px)", color: C.text, fontWeight: 800, letterSpacing: "-0.03em" }}>Application Tracker</h1>
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
-          {jobs.length > 0 && (
-            <Btn onClick={exportCSV} variant="ghost" small>↓ Export CSV</Btn>
-          )}
+          {jobs.length > 0 && <Btn onClick={exportCSV} variant="ghost" small>↓ Export CSV</Btn>}
           <Btn onClick={() => setShowAdd(true)} small>+ Add Job</Btn>
         </div>
       </div>
@@ -1283,10 +1666,10 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "12px", marginBottom: "32px" }}>
         {[
-          { l: "Active",       v: stats.total,     c: C.textMid  },
-          { l: "Applied",      v: stats.applied,   c: C.accent   },
-          { l: "In Progress",  v: stats.active,    c: C.yellow   },
-          { l: "Follow-ups",   v: stats.followUps, c: stats.followUps > 0 ? C.orange : C.textMid },
+          { l: "Active",      v: stats.total,   c: C.textMid },
+          { l: "Applied",     v: stats.applied, c: C.accent  },
+          { l: "In Progress", v: stats.active,  c: C.yellow  },
+          { l: "Offers",      v: stats.offers,  c: C.mint    },
         ].map(({ l, v, c }) => (
           <div key={l} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "18px 20px" }}>
             <div style={{ fontFamily: T.display, fontSize: "36px", color: c, lineHeight: 1, marginBottom: "8px", fontWeight: 800 }}>{v}</div>
@@ -1308,7 +1691,6 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
             </button>
           );
         })}
-        {/* Rejected — separated visually */}
         {rejectedJobs.length > 0 && (
           <>
             <div style={{ width: "1px", height: "20px", background: C.border, flexShrink: 0 }} />
@@ -1332,34 +1714,19 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
           {filtered.map(job => {
             const st  = SM[job.status] || STATUSES[0];
             const exp = expandedId === job.id;
+            const jobTier = job.tier ? TIERS.find(t => t.label === job.tier) : null;
             return (
               <div key={job.id} style={{ background: C.surface, border: `1px solid ${exp ? C.border2 : C.border}`, borderRadius: "12px", overflow: "hidden" }}>
-                {/* Card row */}
                 <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: "14px" }}>
                   <Pill label={st.short} color={st.color} bg={st.bg} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "3px", flexWrap: "wrap" }}>
-                      <p style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: 0, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{job.title}</p>
-                      {job.workArrangement && job.workArrangement !== "Not specified" && (
-                        <span style={{ fontFamily: T.mono, fontSize: "9px", color: job.workArrangement === "Remote" ? C.mint : C.yellow, background: job.workArrangement === "Remote" ? "#0a1a0d" : "#1a1800", border: `1px solid ${job.workArrangement === "Remote" ? C.mint : C.yellow}44`, borderRadius: "4px", padding: "2px 7px", letterSpacing: "0.08em", flexShrink: 0 }}>{job.workArrangement.toUpperCase()}</span>
-                      )}
-                      {job.employmentType && job.employmentType !== "Not specified" && job.employmentType !== "Full-time" && (
-                        <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.blue, background: "#0d1520", border: `1px solid ${C.blue}44`, borderRadius: "4px", padding: "2px 7px", letterSpacing: "0.08em", flexShrink: 0 }}>{job.employmentType.toUpperCase()}</span>
-                      )}
-                    </div>
-                    <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.textSub, margin: 0, lineHeight: 1.4 }}>
-                      {job.company}{job.location ? `  ·  ${job.location}` : ""}{cardSub(job) ? `  ·  ${cardSub(job)}` : ""}
-                    </p>
-                    {(job.salary || job.deadline) && (
-                      <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, margin: "2px 0 0", lineHeight: 1.4 }}>
-                        {job.salary}{job.salary && job.deadline ? "  ·  " : ""}{job.deadline ? `Deadline: ${fmtDate(job.deadline + "T12:00:00")}` : ""}
+                    <p style={{ fontFamily: T.display, fontSize: "16px", color: C.text, margin: "0 0 3px", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{job.title}</p>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.textSub, margin: 0, lineHeight: 1.4 }}>
+                        {job.company}{cardSub(job) ? `  ·  ${cardSub(job)}` : ""}
                       </p>
-                    )}
-                    {job.skills?.length > 0 && (
-                      <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginTop: "6px" }}>
-                        {job.skills.map((s, i) => <span key={i} style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "4px", padding: "2px 7px" }}>{s}</span>)}
-                      </div>
-                    )}
+                      {jobTier && <TierBadge tier={jobTier} />}
+                    </div>
                   </div>
                   {(job.recruiterScore || job.hmScore) && (
                     <div style={{ display: "flex", gap: "12px", flexShrink: 0 }}>
@@ -1382,7 +1749,6 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                   </button>
                 </div>
 
-                {/* Expanded panel */}
                 {exp && (
                   <div style={{ borderTop: `1px solid ${C.border}`, padding: "22px 20px" }}>
                     <Timeline job={job} />
@@ -1408,35 +1774,11 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                       </div>
                     )}
 
-                    {/* Follow-up date */}
-                    <div style={{ marginBottom: "18px" }}>
-                      <Label>Follow-up Date</Label>
-                      <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                        <input type="date" value={job.followUpDate ? job.followUpDate.slice(0,10) : ""}
-                          onChange={e => onUpdateJob({ ...job, followUpDate: e.target.value ? new Date(e.target.value + "T12:00:00").toISOString() : null })}
-                          style={{ background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "6px", padding: "7px 12px", fontSize: "13px", color: job.followUpDate ? C.text : C.textDim, fontFamily: T.mono, outline: "none", colorScheme: "dark" }} />
-                        {job.followUpDate && (() => {
-                          const daysUntil = Math.ceil((new Date(job.followUpDate) - new Date()) / 86400000);
-                          const color = daysUntil < 0 ? C.red : daysUntil <= 2 ? C.yellow : C.textDim;
-                          return <span style={{ fontFamily: T.mono, fontSize: "11px", color }}>{daysUntil < 0 ? `${Math.abs(daysUntil)}d overdue` : daysUntil === 0 ? "Today" : `in ${daysUntil}d`}</span>;
-                        })()}
-                      </div>
-                    </div>
-
-                    {/* Recruiter contact */}
-                    {job.recruiterContact && (
-                      <div style={{ marginBottom: "18px" }}>
-                        <Label>Recruiter / Contact</Label>
-                        <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, margin: 0 }}>{job.recruiterContact}</p>
-                      </div>
-                    )}
-
-                    {/* Notes */}
                     <div style={{ marginBottom: "18px" }}>
                       <Label>Notes</Label>
                       {editingNotes === job.id ? (
                         <div>
-                          <Field value={notesDraft} onChange={setNotesDraft} placeholder="Notes — recruiter name, what to prep, anything relevant..." multiline rows={4} />
+                          <Field value={notesDraft} onChange={setNotesDraft} placeholder="Notes..." multiline rows={4} />
                           <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
                             <Btn small onClick={() => { onUpdateJob({ ...job, notes: notesDraft }); setEditingNotes(null); }}>Save</Btn>
                             <Btn small variant="ghost" onClick={() => setEditingNotes(null)}>Cancel</Btn>
@@ -1445,27 +1787,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                       ) : (
                         <div onClick={() => { setEditingNotes(job.id); setNotesDraft(job.notes || ""); }} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px", minHeight: "52px", cursor: "text" }}>
                           <p style={{ fontFamily: T.body, fontSize: "15px", color: job.notes ? C.textMid : C.textDim, margin: 0, lineHeight: 1.75 }}>
-                            {job.notes || "Click to add notes..."}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Interview notes */}
-                    <div style={{ marginBottom: "18px" }}>
-                      <Label>Interview Notes</Label>
-                      {editingNotes === job.id + "_interview" ? (
-                        <div>
-                          <Field value={notesDraft} onChange={setNotesDraft} placeholder="Who you spoke to, what was discussed, questions asked, next steps..." multiline rows={5} />
-                          <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
-                            <Btn small onClick={() => { onUpdateJob({ ...job, interviewNotes: notesDraft }); setEditingNotes(null); }}>Save</Btn>
-                            <Btn small variant="ghost" onClick={() => setEditingNotes(null)}>Cancel</Btn>
-                          </div>
-                        </div>
-                      ) : (
-                        <div onClick={() => { setEditingNotes(job.id + "_interview"); setNotesDraft(job.interviewNotes || ""); }} style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px", minHeight: "52px", cursor: "text" }}>
-                          <p style={{ fontFamily: T.body, fontSize: "15px", color: job.interviewNotes ? C.textMid : C.textDim, margin: 0, lineHeight: 1.75 }}>
-                            {job.interviewNotes || "Click to add interview notes..."}
+                            {job.notes || "Click to add notes — recruiter name, follow-up date, what was discussed..."}
                           </p>
                         </div>
                       )}
@@ -1484,9 +1806,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
 
                     <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
                       <Btn small variant="ghost" onClick={() => setEditingJob({ ...job })}>✏ Edit Job</Btn>
-                      <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this job from your pipeline?")) onDeleteJob(job.id); }}>
-                        Remove
-                      </Btn>
+                      <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this job from your pipeline?")) onDeleteJob(job.id); }}>Remove</Btn>
                     </div>
                   </div>
                 )}
@@ -1518,13 +1838,8 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
         </div>
       )}
 
-      {/* Edit Job Modal */}
       {editingJob && (
-        <EditJobModal
-          job={editingJob}
-          onSave={(updated) => { onUpdateJob(updated); setEditingJob(null); }}
-          onClose={() => setEditingJob(null)}
-        />
+        <EditJobModal job={editingJob} onSave={(updated) => { onUpdateJob(updated); setEditingJob(null); }} onClose={() => setEditingJob(null)} />
       )}
     </div>
   );
@@ -1532,10 +1847,10 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
 
 // ─── SETTINGS PAGE ────────────────────────────────────────────────────────────
 function SettingsPage({ resume, onUpdateResume }) {
-  const [draft, setDraft] = useState(resume);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(KEYS.apiKey) || "");
+  const [draft, setDraft]       = useState(resume);
+  const [apiKey, setApiKey]     = useState(() => localStorage.getItem(KEYS.apiKey) || "");
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem(KEYS.proxyUrl) || "");
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved]       = useState(false);
   const [keySaved, setKeySaved] = useState(false);
   const charOk = draft.trim().length >= 100;
 
@@ -1554,37 +1869,24 @@ function SettingsPage({ resume, onUpdateResume }) {
     setKeySaved(true); setTimeout(() => setKeySaved(false), 2500);
   };
 
-  const clearKey = () => { if (!window.confirm("Clear your saved API key and proxy URL? You'll need to re-enter them.")) return; localStorage.removeItem(KEYS.apiKey); localStorage.removeItem(KEYS.proxyUrl); setApiKey(""); setProxyUrl(""); };
+  const clearKey = () => { localStorage.removeItem(KEYS.apiKey); localStorage.removeItem(KEYS.proxyUrl); setApiKey(""); setProxyUrl(""); };
 
   return (
     <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
       <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 16px" }}>Settings</p>
       <h1 style={{ fontFamily: T.display, fontSize: "clamp(26px,4vw,38px)", color: C.text, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 36px" }}>Settings</h1>
 
-      {/* API Key */}
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "28px", marginBottom: "18px" }}>
         <Label color={C.accent}>Anthropic API Key</Label>
         <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "0 0 18px" }}>
-          Your API key is stored locally in your browser and never sent anywhere except directly to Anthropic's API. Get a key at{" "}
+          Stored locally in your browser — never sent anywhere except directly to Anthropic's API. Get a key at{" "}
           <a href="https://console.anthropic.com" target="_blank" rel="noreferrer">console.anthropic.com</a>.
         </p>
         <div style={{ marginBottom: "14px" }}>
           <Label>API Key</Label>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={e => setApiKey(e.target.value)}
-            placeholder="sk-ant-..."
-            style={{ width: "100%", background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "12px 16px", fontSize: "14px", color: C.text, fontFamily: T.mono, outline: "none", boxSizing: "border-box", marginBottom: "14px" }}
-          />
+          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-ant-..." style={{ width: "100%", background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "12px 16px", fontSize: "14px", color: C.text, fontFamily: T.mono, outline: "none", boxSizing: "border-box", marginBottom: "14px" }} />
           <Label>Proxy URL <span style={{ color: C.textDim, textTransform: "none", letterSpacing: 0, fontFamily: T.body, fontSize: "13px" }}>— optional, fixes CORS errors</span></Label>
-          <input
-            type="text"
-            value={proxyUrl}
-            onChange={e => setProxyUrl(e.target.value)}
-            placeholder="https://your-worker.workers.dev"
-            style={{ width: "100%", background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "12px 16px", fontSize: "14px", color: C.text, fontFamily: T.mono, outline: "none", boxSizing: "border-box" }}
-          />
+          <input type="text" value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="https://your-worker.workers.dev" style={{ width: "100%", background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "12px 16px", fontSize: "14px", color: C.text, fontFamily: T.mono, outline: "none", boxSizing: "border-box" }} />
           <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, lineHeight: 1.7, margin: "10px 0 0" }}>
             Seeing "Access-Control-Allow-Origin" errors? Deploy <code style={{ fontFamily: T.mono, fontSize: "12px", color: C.textSub }}>cloudflare-worker/proxy.js</code> to a free Cloudflare Worker and paste the URL here.
           </p>
@@ -1595,173 +1897,28 @@ function SettingsPage({ resume, onUpdateResume }) {
         </div>
       </div>
 
-      {/* Resume */}
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "28px", marginBottom: "18px" }}>
         <Label>Resume</Label>
         <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "0 0 20px" }}>
-          This is the resume inflow uses for every job analysis. Keep it current. All future analyses will use whatever version is saved here.
+          This resume is used for every job analysis. Keep it current — all future analyses reference whatever version is saved here.
         </p>
         <Field value={draft} onChange={setDraft} placeholder="Your resume..." multiline rows={22} />
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
         <Btn onClick={save} disabled={!charOk}>{saved ? "✓ Resume Updated" : "Save Resume"}</Btn>
-        <span style={{ fontFamily: T.mono, fontSize: "11px", color: charOk ? C.accent : C.textDim }}>
-          {draft.trim().length} characters
-        </span>
+        <span style={{ fontFamily: T.mono, fontSize: "11px", color: charOk ? C.accent : C.textDim }}>{draft.trim().length} characters</span>
       </div>
-    </div>
-  );
-}
-
-// ─── PWA UPDATE TOAST ─────────────────────────────────────────────────────────
-function UpdateToast() {
-  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW();
-  if (!needRefresh) return null;
-  return (
-    <div style={{ position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)', background: C.surface, border: `1px solid ${C.accent}44`, borderRadius: '10px', padding: '12px 20px', display: 'flex', alignItems: 'center', gap: '16px', zIndex: 999, boxShadow: `0 4px 24px #00000066` }}>
-      <span style={{ fontFamily: T.body, fontSize: '14px', color: C.textMid }}>New version available</span>
-      <button onClick={() => updateServiceWorker(true)} style={{ background: C.accent, color: '#0a0b0a', border: 'none', borderRadius: '6px', padding: '6px 14px', fontFamily: T.mono, fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', cursor: 'pointer', fontWeight: 600 }}>Update</button>
-    </div>
-  );
-}
-
-// ─── RESCORE CARD ─────────────────────────────────────────────────────────────
-function ReScoreCard({ job, updatedResume, onUpdate }) {
-  const [scoring, setScoring] = useState(false);
-  const [error, setError] = useState("");
-
-  const hasUpdated = !!updatedResume?.trim();
-  const hasScores = job.updatedRecruiterScore != null || job.updatedHmScore != null;
-
-  const delta = (orig, updated) => {
-    if (orig == null || updated == null) return null;
-    const d = updated - orig;
-    if (d === 0) return <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>→ {updated}</span>;
-    return (
-      <span style={{ fontFamily: T.mono, fontSize: "10px", color: d > 0 ? C.accent : C.red }}>
-        {d > 0 ? `↑${d}` : `↓${Math.abs(d)}`} → {updated}
-      </span>
-    );
-  };
-
-  const runRescore = async () => {
-    const apiKey = localStorage.getItem(KEYS.apiKey);
-    const proxyUrl = localStorage.getItem(KEYS.proxyUrl);
-    if (!apiKey) { setError("No API key. Go to Settings."); return; }
-    if (!hasUpdated) { setError("No updated resume saved. Go to the Resume tab first."); return; }
-
-    setScoring(true); setError("");
-    try {
-      const prompt = `You are a senior recruiter. Re-score this candidate for the job below using their UPDATED resume.
-
-Return ONLY this exact format — nothing else:
-RECRUITER SCORE: [number 1-10]
-HIRING MANAGER SCORE: [number 1-10]
-CHANGE SUMMARY: [one sentence explaining the key improvement or remaining gap]
-
-ORIGINAL RECRUITER SCORE: ${job.recruiterScore ?? "unknown"}
-ORIGINAL HM SCORE: ${job.hmScore ?? "unknown"}
-
-UPDATED RESUME:
-${updatedResume}
-
-JOB CONTEXT (from original analysis):
-${job.analysis?.slice(0, 800) || "No analysis available."}`;
-
-      const endpoint = proxyUrl ? proxyUrl.replace(/\/$/, '') : "https://api.anthropic.com/v1/messages";
-      const headers = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
-      if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
-
-      const res = await fetch(endpoint, {
-        method: "POST", headers,
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 200, messages: [{ role: "user", content: prompt }] })
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
-      const rMatch = text.match(/RECRUITER SCORE:\s*(\d+(?:\.\d+)?)/i);
-      const hMatch = text.match(/HIRING MANAGER SCORE:\s*(\d+(?:\.\d+)?)/i);
-      const sMatch = text.match(/CHANGE SUMMARY:\s*(.+)/i);
-      onUpdate({
-        ...job,
-        updatedRecruiterScore: rMatch ? parseFloat(rMatch[1]) : null,
-        updatedHmScore: hMatch ? parseFloat(hMatch[1]) : null,
-        updatedScoreSummary: sMatch ? sMatch[1].trim() : "",
-        updatedScoreDate: now(),
-      });
-    } catch (err) {
-      setError(err.message || "Re-score failed.");
-    }
-    setScoring(false);
-  };
-
-  return (
-    <div style={{ marginBottom: "18px" }}>
-      <Label>Projected Score with Updated Resume</Label>
-      {!hasUpdated ? (
-        <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "12px 16px" }}>
-          <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, margin: 0, lineHeight: 1.6 }}>
-            No updated resume saved. Go to the <strong style={{ color: C.textSub }}>Resume</strong> tab, paste your edited resume, and save it — then come back to re-score.
-          </p>
-        </div>
-      ) : (
-        <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", overflow: "hidden" }}>
-          {hasScores ? (
-            <div style={{ padding: "14px 18px" }}>
-              <div style={{ display: "flex", gap: "24px", marginBottom: "10px" }}>
-                <div>
-                  <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>Recruiter</p>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontFamily: T.display, fontSize: "24px", color: scoreColor(job.recruiterScore), fontWeight: 800, lineHeight: 1, opacity: 0.5 }}>{job.recruiterScore}</span>
-                    <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>→</span>
-                    <span style={{ fontFamily: T.display, fontSize: "28px", color: scoreColor(job.updatedRecruiterScore), fontWeight: 800, lineHeight: 1 }}>{job.updatedRecruiterScore}</span>
-                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: (job.updatedRecruiterScore - job.recruiterScore) > 0 ? C.accent : C.red }}>
-                      {job.updatedRecruiterScore > job.recruiterScore ? `↑${job.updatedRecruiterScore - job.recruiterScore}` : job.updatedRecruiterScore < job.recruiterScore ? `↓${job.recruiterScore - job.updatedRecruiterScore}` : "→"}
-                    </span>
-                  </div>
-                </div>
-                <div>
-                  <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 4px" }}>HM Score</p>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontFamily: T.display, fontSize: "24px", color: scoreColor(job.hmScore), fontWeight: 800, lineHeight: 1, opacity: 0.5 }}>{job.hmScore}</span>
-                    <span style={{ fontFamily: T.mono, fontSize: "12px", color: C.textDim }}>→</span>
-                    <span style={{ fontFamily: T.display, fontSize: "28px", color: scoreColor(job.updatedHmScore), fontWeight: 800, lineHeight: 1 }}>{job.updatedHmScore}</span>
-                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: (job.updatedHmScore - job.hmScore) > 0 ? C.accent : C.red }}>
-                      {job.updatedHmScore > job.hmScore ? `↑${job.updatedHmScore - job.hmScore}` : job.updatedHmScore < job.hmScore ? `↓${job.hmScore - job.updatedHmScore}` : "→"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              {job.updatedScoreSummary && (
-                <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: "0 0 12px", lineHeight: 1.6, fontStyle: "italic" }}>↳ {job.updatedScoreSummary}</p>
-              )}
-              {job.updatedScoreDate && (
-                <p style={{ fontFamily: T.mono, fontSize: "9px", color: C.textDim, margin: "0 0 12px", letterSpacing: "0.08em" }}>Last scored {fmtDate(job.updatedScoreDate)}</p>
-              )}
-              <Btn small variant="ghost" onClick={runRescore} disabled={scoring}>{scoring ? "Scoring..." : "Re-run Score"}</Btn>
-            </div>
-          ) : (
-            <div style={{ padding: "14px 18px" }}>
-              <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: "0 0 12px", lineHeight: 1.6 }}>
-                Updated resume is saved. Run a re-score to see projected score improvements.
-              </p>
-              <Btn small onClick={runRescore} disabled={scoring}>{scoring ? "Scoring..." : "⚡ Run Re-Score"}</Btn>
-            </div>
-          )}
-          {error && <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.red, margin: "0 18px 14px", letterSpacing: "0.06em" }}>⚠ {error}</p>}
-        </div>
-      )}
     </div>
   );
 }
 
 // ─── RESUME PAGE ──────────────────────────────────────────────────────────────
 function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }) {
-  const [activeTab, setActiveTab] = useState("base");
-  const [baseDraft, setBaseDraft] = useState(baseResume || "");
+  const [activeTab, setActiveTab]       = useState("base");
+  const [baseDraft, setBaseDraft]       = useState(baseResume || "");
   const [updatedDraft, setUpdatedDraft] = useState(updatedResume || "");
-  const [baseSaved, setBaseSaved] = useState(false);
+  const [baseSaved, setBaseSaved]       = useState(false);
   const [updatedSaved, setUpdatedSaved] = useState(false);
 
   const saveBase = async () => {
@@ -1780,8 +1937,7 @@ function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }
 
   const clearUpdated = async () => {
     await store.set(KEYS.updatedResume, "");
-    onUpdateUpdated("");
-    setUpdatedDraft("");
+    onUpdateUpdated(""); setUpdatedDraft("");
   };
 
   return (
@@ -1792,12 +1948,8 @@ function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }
         Keep your base resume for all new analyses. Paste your edited version to re-score saved jobs and see projected score improvements.
       </p>
 
-      {/* Tab switcher */}
       <div style={{ display: "flex", background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "4px", gap: "4px", marginBottom: "24px", width: "fit-content" }}>
-        {[
-          { key: "base", label: "Base Resume" },
-          { key: "updated", label: "Updated Resume", badge: updatedResume?.trim() ? "✓" : null },
-        ].map(({ key, label, badge }) => (
+        {[{ key: "base", label: "Base Resume" }, { key: "updated", label: "Updated Resume", badge: updatedResume?.trim() ? "✓" : null }].map(({ key, label, badge }) => (
           <button key={key} onClick={() => setActiveTab(key)} style={{ padding: "8px 20px", borderRadius: "7px", border: "none", background: activeTab === key ? C.surface2 : "transparent", color: activeTab === key ? C.text : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}>
             {label}
             {badge && <span style={{ fontFamily: T.mono, fontSize: "9px", color: C.accent }}>{badge}</span>}
@@ -1822,7 +1974,7 @@ function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }
                 </div>
               )}
             </div>
-            <Field value={updatedDraft} onChange={setUpdatedDraft} placeholder="Paste your updated resume here — the version you've edited based on the suggestions..." multiline rows={18} />
+            <Field value={updatedDraft} onChange={setUpdatedDraft} placeholder="Paste your updated resume here..." multiline rows={18} />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
             <Btn onClick={saveUpdated} disabled={updatedDraft.trim().length < 50}>{updatedSaved ? "✓ Saved" : "Save Updated Resume"}</Btn>
@@ -1837,7 +1989,7 @@ function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "24px 28px", marginBottom: "18px" }}>
             <Label>Base Resume</Label>
             <p style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid, lineHeight: 1.8, margin: "0 0 18px" }}>
-              This is the resume used for all new job analyses. Update it here when you make permanent changes to your resume.
+              Used for all new job analyses. Update it here when you make permanent changes to your resume.
             </p>
             <Field value={baseDraft} onChange={setBaseDraft} placeholder="Your base resume..." multiline rows={20} />
           </div>
@@ -1851,13 +2003,25 @@ function ResumePage({ baseResume, updatedResume, onUpdateBase, onUpdateUpdated }
   );
 }
 
+// ─── PWA UPDATE TOAST ─────────────────────────────────────────────────────────
+function UpdateToast() {
+  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW();
+  if (!needRefresh) return null;
+  return (
+    <div style={{ position: "fixed", bottom: "24px", left: "50%", transform: "translateX(-50%)", background: C.surface, border: `1px solid ${C.accent}44`, borderRadius: "10px", padding: "12px 20px", display: "flex", alignItems: "center", gap: "16px", zIndex: 999, boxShadow: "0 4px 24px #00000066" }}>
+      <span style={{ fontFamily: T.body, fontSize: "14px", color: C.textMid }}>New version available</span>
+      <button onClick={() => updateServiceWorker(true)} style={{ background: C.accent, color: "#0a0b0a", border: "none", borderRadius: "6px", padding: "6px 14px", fontFamily: T.mono, fontSize: "10px", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontWeight: 600 }}>Update</button>
+    </div>
+  );
+}
+
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [ready, setReady]   = useState(false);
-  const [resume, setResume] = useState(null);
+  const [ready, setReady]               = useState(false);
+  const [resume, setResume]             = useState(null);
   const [updatedResume, setUpdatedResume] = useState("");
-  const [jobs, setJobs]     = useState([]);
-  const [page, setPage]     = useState("analyzer");
+  const [jobs, setJobs]                 = useState([]);
+  const [page, setPage]                 = useState("analyzer");
 
   useEffect(() => {
     Promise.all([store.get(KEYS.resume), store.get(KEYS.jobs), store.get(KEYS.updatedResume)]).then(([r, j, u]) => {
@@ -1868,14 +2032,14 @@ export default function App() {
     });
   }, []);
 
-  const persist       = (u) => { setJobs(u); store.set(KEYS.jobs, JSON.stringify(u)); };
-  const handleSaveJob = (j) => persist([j, ...jobs]);
-  const handleUpdate  = (u) => persist(jobs.map(j => j.id === u.id ? u : j));
-  const handleDelete  = (id) => persist(jobs.filter(j => j.id !== id));
-  const handleAdd     = (j) => persist([j, ...jobs]);
-  const handleResume  = (r) => setResume(r);
+  const persist             = (u) => { setJobs(u); store.set(KEYS.jobs, JSON.stringify(u)); };
+  const handleSaveJob       = (j) => persist([j, ...jobs]);
+  const handleUpdate        = (u) => persist(jobs.map(j => j.id === u.id ? u : j));
+  const handleDelete        = (id) => persist(jobs.filter(j => j.id !== id));
+  const handleAdd           = (j) => persist([j, ...jobs]);
+  const handleResume        = (r) => setResume(r);
   const handleUpdatedResume = (r) => setUpdatedResume(r);
-  const handleOnboard = (r) => { setResume(r); setPage("analyzer"); };
+  const handleOnboard       = (r) => { setResume(r); setPage("analyzer"); };
 
   const pending = jobs.filter(j => ["screen","interview"].includes(j.status)).length;
 
@@ -1934,9 +2098,81 @@ export default function App() {
 
       {page === "analyzer" && <AnalyzerPage resume={resume} onSaveJob={handleSaveJob} />}
       {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} updatedResume={updatedResume} />}
-      {page === "resumes"  && <ResumePage baseResume={resume} updatedResume={updatedResume} onUpdateBase={handleResume} onUpdateUpdated={handleUpdatedResume} />}
+      {page === "resumes"  && <ResumePage   baseResume={resume} updatedResume={updatedResume} onUpdateBase={handleResume} onUpdateUpdated={handleUpdatedResume} />}
       {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} />}
       <UpdateToast />
+    </div>
+  );
+}
+// ─── ONBOARDING ───────────────────────────────────────────────────────────────
+function Onboarding({ onComplete }) {
+  const [step, setStep] = useState(0);
+  const [resume, setResume] = useState("");
+  const charOk = resume.trim().length >= 100;
+
+  const save = async () => {
+    if (!charOk) return;
+    await store.set(KEYS.resume, resume.trim());
+    onComplete(resume.trim());
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+      <div style={{ width: "100%", maxWidth: "580px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "56px" }}>
+          <svg width="30" height="30" viewBox="0 0 48 48">
+            <rect width="48" height="48" rx="10" fill={C.bg} stroke={C.border2} strokeWidth="2"/>
+            <circle cx="24" cy="13" r="4.5" fill={C.accent}/>
+            <path d="M8 28 C13 22 19 36 24 30 C29 24 35 38 40 32" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round"/>
+          </svg>
+          <span style={{ fontFamily: T.display, fontSize: "22px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em" }}>inflow</span>
+        </div>
+
+        {step === 0 && (
+          <div>
+            <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.18em", textTransform: "uppercase", margin: "0 0 18px" }}>Welcome</p>
+            <h1 style={{ fontFamily: T.display, fontSize: "clamp(36px,6vw,56px)", color: C.text, fontWeight: 800, lineHeight: 1.05, letterSpacing: "-0.03em", margin: "0 0 22px" }}>
+              Simulate how<br /><span style={{ color: C.accent }}>recruiters see you.</span>
+            </h1>
+            <p style={{ fontFamily: T.body, fontSize: "16px", color: C.textMid, lineHeight: 1.8, margin: "0 0 36px" }}>
+              inflow simulates the internal hiring discussion that determines whether a candidate advances — not a resume scorer, not a keyword checker. A real evaluation of whether you'd get the interview.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "40px" }}>
+              {[
+                "Dual recruiter + hiring manager scoring against the actual applicant pool",
+                "Honest hiring decision: Yes / No / Conditional — with specific reasoning",
+                "Resume improvements you can genuinely defend in an interview",
+                "Interview risk assessment: the questions they'll actually ask",
+              ].map((f, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+                  <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: C.accent, flexShrink: 0, marginTop: "8px" }} />
+                  <span style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.6 }}>{f}</span>
+                </div>
+              ))}
+            </div>
+            <Btn onClick={() => setStep(1)}>Get Started →</Btn>
+          </div>
+        )}
+
+        {step === 1 && (
+          <div>
+            <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.18em", textTransform: "uppercase", margin: "0 0 18px" }}>Setup — Step 1 of 1</p>
+            <h2 style={{ fontFamily: T.display, fontSize: "34px", color: C.text, fontWeight: 800, letterSpacing: "-0.02em", margin: "0 0 12px" }}>Paste your resume.</h2>
+            <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "0 0 24px" }}>
+              Plain text is fine — copy from Word, Google Doc, or PDF. Include your summary, experience, education, and skills. inflow references this for every job you analyze. Update it anytime in Settings.
+            </p>
+            <div style={{ marginBottom: "20px" }}>
+              <Field value={resume} onChange={setResume} placeholder="Paste your full resume here..." multiline rows={14} />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+              <Btn onClick={save} disabled={!charOk}>Save Resume & Launch →</Btn>
+              <span style={{ fontFamily: T.mono, fontSize: "11px", color: charOk ? C.accent : C.textDim }}>
+                {resume.trim().length} chars {charOk ? "✓ ready" : `— need ${100 - resume.trim().length} more`}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
