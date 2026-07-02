@@ -110,10 +110,16 @@ const parseJobMeta = (text) => {
     const s = v.slice(0, max).trim();
     return /^(unknown|n\/a|not (listed|stated|specified))$/i.test(s) ? null : s;
   };
+  const reqRaw = clean(grab("KEY_REQUIREMENTS"), 500);
   return {
     title:   clean(grab("JOB_TITLE"), 60),
     company: clean(grab("COMPANY"), 40),
     location: clean(grab("LOCATION"), 40),
+    workMode: clean(grab("WORK_MODE"), 20),
+    salary:   clean(grab("SALARY"), 60),
+    employmentType:  clean(grab("EMPLOYMENT_TYPE"), 30),
+    experienceLevel: clean(grab("EXPERIENCE_LEVEL"), 60),
+    requirements: reqRaw ? reqRaw.split(";").map(r => r.trim()).filter(Boolean).slice(0, 6) : [],
   };
 };
 
@@ -332,7 +338,12 @@ When given a job posting URL or description:
 ## STEP 0 — JOB METADATA
 JOB_TITLE: [the exact job title from the posting — no commentary, title only]
 COMPANY: [the company name exactly as written — no commentary, name only]
-LOCATION: [city / remote / hybrid if stated, otherwise write Unknown]
+LOCATION: [city and state if stated, otherwise write Unknown]
+WORK_MODE: [Remote / Hybrid / On-site — otherwise Unknown]
+SALARY: [the pay range or amount exactly as posted, otherwise Unknown]
+EMPLOYMENT_TYPE: [Full-time / Part-time / Contract / Temporary — otherwise Unknown]
+EXPERIENCE_LEVEL: [the stated years or seniority requirement, otherwise Unknown]
+KEY_REQUIREMENTS: [the 4–6 must-have requirements from the posting, separated by " ; " — short phrases, not sentences]
 
 ## STEP 1 — EXECUTIVE SUMMARY
 - Recruiter Score: [X]/10 — [one-line verdict, recruiter perspective]
@@ -458,7 +469,12 @@ ${resume}`;
 const SAMPLE_JOB_ANALYSIS = `## STEP 0 — JOB METADATA
 JOB_TITLE: Business Analyst II
 COMPANY: Meridian Health Systems
-LOCATION: San Diego, CA (Hybrid)
+LOCATION: San Diego, CA
+WORK_MODE: Hybrid
+SALARY: $72,000 – $88,000
+EMPLOYMENT_TYPE: Full-time
+EXPERIENCE_LEVEL: 3–5 years
+KEY_REQUIREMENTS: Requirements gathering and documentation ; SQL for reporting and ad-hoc analysis ; Stakeholder management across clinical and technical teams ; Process mapping and workflow documentation ; Experience in a regulated or healthcare environment
 
 ## STEP 1 — EXECUTIVE SUMMARY
 - Recruiter Score: 6.5/10 — Solid operations foundation with clear process-improvement evidence, but the title history doesn't say "analyst" yet.
@@ -930,6 +946,9 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
         // pipeline entry rather than creating a duplicate.
         onPatchJob(savedJobIdRef.current, {
           title: autoTitle, company: autoCompany,
+          location: meta.location, workMode: meta.workMode, salary: meta.salary,
+          employmentType: meta.employmentType, experienceLevel: meta.experienceLevel,
+          requirements: meta.requirements,
           recruiterScore: parsedScores.recruiter, hmScore: parsedScores.hm,
           tier: parsedTier?.label || null, analysis: text,
         });
@@ -939,6 +958,9 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
         const t2 = now();
         onSaveJob({
           id, title: autoTitle, company: autoCompany,
+          location: meta.location, workMode: meta.workMode, salary: meta.salary,
+          employmentType: meta.employmentType, experienceLevel: meta.experienceLevel,
+          requirements: meta.requirements,
           url: isUrl(input) ? input.trim() : "", status: "saved",
           recruiterScore: parsedScores.recruiter, hmScore: parsedScores.hm,
           tier: parsedTier?.label || null,
@@ -1565,11 +1587,59 @@ function DecisionConfidenceBubble({ confidence }) {
   );
 }
 
+
+// ─── LISTING DETAILS ─────────────────────────────────────────────────────────
+// Structured details captured from the original job posting (STEP 0 metadata).
+function ListingDetails({ job }) {
+  const facts = [
+    ["Location", job.location],
+    ["Work Mode", job.workMode],
+    ["Salary", job.salary],
+    ["Type", job.employmentType],
+    ["Experience", job.experienceLevel],
+  ].filter(([, v]) => v);
+  const reqs = job.requirements || [];
+  if (!facts.length && !reqs.length) return null;
+
+  return (
+    <div style={{ marginBottom: "22px" }}>
+      <Label>From the Listing</Label>
+      <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "10px", padding: "16px 18px" }}>
+        {facts.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px 20px", marginBottom: reqs.length ? "16px" : 0 }}>
+            {facts.map(([k, v]) => (
+              <div key={k}>
+                <div style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "4px" }}>{k}</div>
+                <div style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, lineHeight: 1.5 }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {reqs.length > 0 && (
+          <div>
+            <div style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "8px" }}>Key Requirements</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              {reqs.map((r, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                  <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: C.accent, flexShrink: 0, marginTop: "7px" }} />
+                  <span style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, lineHeight: 1.6 }}>{r}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── EDIT JOB MODAL ───────────────────────────────────────────────────────────
 function EditJobModal({ job, onSave, onClose }) {
   const [draft, setDraft] = useState({
     title:   job.title   || "",
     company: job.company || "",
+    location: job.location || "",
+    salary:  job.salary  || "",
     url:     job.url     || "",
     notes:   job.notes   || "",
     status:  job.status  || "saved",
@@ -1627,6 +1697,13 @@ function EditJobModal({ job, onSave, onClose }) {
         ...job, ...draft, analysis: text,
         title:   isPlaceholderTitle && meta.title   ? meta.title   : draft.title,
         company: isPlaceholderComp  && meta.company ? meta.company : draft.company,
+        // Fill listing details the job doesn't have yet — never overwrite user edits
+        location: job.location || meta.location,
+        workMode: job.workMode || meta.workMode,
+        salary: (draft.salary ?? job.salary) || meta.salary,
+        employmentType: job.employmentType || meta.employmentType,
+        experienceLevel: job.experienceLevel || meta.experienceLevel,
+        requirements: (job.requirements && job.requirements.length) ? job.requirements : meta.requirements,
         recruiterScore: parsed.recruiter ?? job.recruiterScore,
         hmScore: parsed.hm ?? job.hmScore,
         tier: tier?.label || job.tier,
@@ -1648,6 +1725,10 @@ function EditJobModal({ job, onSave, onClose }) {
         <div style={{ padding: "16px 28px 28px", display: "flex", flexDirection: "column", gap: "14px" }}>
           <div><Label>Job Title</Label><Field value={draft.title} onChange={v => setDraft(p => ({ ...p, title: v }))} placeholder="Job Title *" /></div>
           <div><Label>Company</Label><Field value={draft.company} onChange={v => setDraft(p => ({ ...p, company: v }))} placeholder="Company" /></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+            <div><Label>Location</Label><Field value={draft.location} onChange={v => setDraft(p => ({ ...p, location: v }))} placeholder="City, ST / Remote" /></div>
+            <div><Label>Salary</Label><Field value={draft.salary} onChange={v => setDraft(p => ({ ...p, salary: v }))} placeholder="$80k–$95k" /></div>
+          </div>
           <div><Label>Job URL</Label><Field value={draft.url} onChange={v => setDraft(p => ({ ...p, url: v }))} placeholder="https://..." mono /></div>
 
           <div>
@@ -1803,7 +1884,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
   const [notesDraft, setNotesDraft] = useState("");
   const [showAdd, setShowAdd]     = useState(false);
   const [editingJob, setEditingJob] = useState(null);
-  const [newJob, setNewJob]       = useState({ title: "", company: "", url: "", status: "saved", notes: "" });
+  const [newJob, setNewJob]       = useState({ title: "", company: "", location: "", salary: "", url: "", status: "saved", notes: "" });
 
   const activeJobs   = jobs.filter(j => j.status !== "rejected");
   const rejectedJobs = jobs.filter(j => j.status === "rejected");
@@ -1822,16 +1903,19 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
     if (!newJob.title.trim()) return;
     const t = now();
     onAddJob({ id: uid(), ...newJob, recruiterScore: null, hmScore: null, tier: null, analysis: "", dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
-    setNewJob({ title: "", company: "", url: "", status: "saved", notes: "" });
+    setNewJob({ title: "", company: "", location: "", salary: "", url: "", status: "saved", notes: "" });
     setShowAdd(false);
   };
 
   const exportCSV = () => {
     if (!jobs.length) return;
-    const cols = ["Title","Company","Status","Tier","Recruiter Score","HM Score","Date Added","Date Applied","Date Screen","Date Interview","Date Offer","Date Rejected","URL","Notes"];
+    const cols = ["Title","Company","Location","Work Mode","Salary","Type","Experience","Status","Tier","Recruiter Score","HM Score","Date Added","Date Applied","Date Screen","Date Interview","Date Offer","Date Rejected","URL","Notes"];
     const escape = (v) => `"${String(v || "").replace(/"/g, '""')}"`;
     const toRows = (list) => list.map(j => [
-      escape(j.title), escape(j.company), escape(SM[j.status]?.label || j.status),
+      escape(j.title), escape(j.company),
+      escape(j.location || ""), escape(j.workMode || ""), escape(j.salary || ""),
+      escape(j.employmentType || ""), escape(j.experienceLevel || ""),
+      escape(SM[j.status]?.label || j.status),
       escape(j.tier || ""), escape(j.recruiterScore ?? ""), escape(j.hmScore ?? ""),
       escape(fmtDate(j.dateAdded) || ""), escape(fmtDate(j.dateApplied) || ""),
       escape(fmtDate(j.dateScreen) || ""), escape(fmtDate(j.dateInterview) || ""),
@@ -1932,6 +2016,11 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                       </p>
                       {jobTier && <TierBadge tier={jobTier} />}
                     </div>
+                    {(job.location || job.workMode || job.salary) && (
+                      <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim, margin: "3px 0 0", lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {[job.location, job.workMode, job.salary].filter(Boolean).join("  ·  ")}
+                      </p>
+                    )}
                   </div>
                   {(job.recruiterScore || job.hmScore) && (
                     <div style={{ display: "flex", gap: "12px", flexShrink: 0 }}>
@@ -1957,6 +2046,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                 {exp && (
                   <div style={{ borderTop: `1px solid ${C.border}`, padding: "22px 20px" }}>
                     <Timeline job={job} />
+                    <ListingDetails job={job} />
                     <DateEditor job={job} onUpdate={onUpdateJob} />
 
                     <div style={{ marginBottom: "22px" }}>
@@ -2029,6 +2119,10 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
             <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "22px", marginTop: "4px" }}>
               <Field value={newJob.title} onChange={v => setNewJob(p => ({ ...p, title: v }))} placeholder="Job Title *" />
               <Field value={newJob.company} onChange={v => setNewJob(p => ({ ...p, company: v }))} placeholder="Company" />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                <Field value={newJob.location} onChange={v => setNewJob(p => ({ ...p, location: v }))} placeholder="Location (optional)" />
+                <Field value={newJob.salary} onChange={v => setNewJob(p => ({ ...p, salary: v }))} placeholder="Salary (optional)" />
+              </div>
               <Field value={newJob.url} onChange={v => setNewJob(p => ({ ...p, url: v }))} placeholder="Job URL (optional)" mono />
               <select value={newJob.status} onChange={e => setNewJob(p => ({ ...p, status: e.target.value }))} style={{ background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "12px 16px", fontSize: "15px", color: C.text, fontFamily: T.mono, outline: "none", width: "100%" }}>
                 {STATUSES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
