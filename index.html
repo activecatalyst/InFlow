@@ -3,21 +3,48 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="inflow — AI-powered job search analyzer and pipeline tracker" />
-    <meta name="theme-color" content="#0a0b0a" />
+    <title>inflow — Simulate How Recruiters Read Your Resume</title>
+    <meta name="description" content="Drop a job posting, get the truth. inflow simulates the internal hiring discussion — dual recruiter and hiring manager scoring, an honest interview decision, defensible resume improvements, and a pipeline tracker. Runs on your own API key, all data stays in your browser." />
+    <link rel="canonical" href="https://activecatalyst.github.io/InFlow/" />
+    <meta name="theme-color" content="#0C0C0B" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="inflow" />
-    <title>inflow</title>
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="inflow" />
+    <meta property="og:title" content="inflow — Simulate How Recruiters Read Your Resume" />
+    <meta property="og:description" content="Drop a job. Get the truth. Dual recruiter + hiring manager scoring, an honest interview decision, and resume edits you can actually defend." />
+    <meta property="og:url" content="https://activecatalyst.github.io/InFlow/" />
+    <meta property="og:image" content="https://activecatalyst.github.io/InFlow/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="inflow — Simulate How Recruiters Read Your Resume" />
+    <meta name="twitter:description" content="Drop a job. Get the truth. Dual recruiter + hiring manager scoring, an honest interview decision, and resume edits you can actually defend." />
+    <meta name="twitter:image" content="https://activecatalyst.github.io/InFlow/og-image.png" />
+
     <link rel="icon" href="/InFlow/favicon.ico" sizes="any" />
     <link rel="icon" type="image/svg+xml" href="/InFlow/favicon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/InFlow/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/InFlow/favicon-16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/InFlow/apple-touch-icon.png" />
   </head>
-  <body>
-    <div id="root"></div>
+  <body style="margin:0;background:#0C0C0B;">
+    <div id="root">
+      <!-- Static, crawlable fallback — replaced by React on mount -->
+      <div style="min-height:100vh;background:#0C0C0B;color:#F5F4F0;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;">
+        <div style="max-width:580px;">
+          <h1 style="font-size:44px;font-weight:800;line-height:1.1;letter-spacing:-0.03em;margin:0 0 18px;">Simulate how <span style="color:#33E68C;">recruiters see you.</span></h1>
+          <p style="font-size:16px;line-height:1.8;color:#C6C6BE;margin:0 0 24px;">inflow simulates the internal hiring discussion that determines whether a candidate advances — not a resume scorer, not a keyword checker. Drop a job posting and get dual recruiter + hiring manager scoring, an honest Yes/No/Conditional interview decision, resume improvements you can genuinely defend, and the interview questions they'll actually ask. Track every application through a full pipeline, from saved to offer.</p>
+          <p style="font-size:14px;line-height:1.7;color:#9C9D93;margin:0;">Runs on your own Anthropic API key. Your resume and data stay in your browser — nothing is sent anywhere except directly to Anthropic's API. Loading the app requires JavaScript.</p>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

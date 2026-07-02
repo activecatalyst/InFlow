@@ -12,10 +12,9 @@ export default defineConfig({
         name: 'inflow',
         short_name: 'inflow',
         description: 'AI-powered job search analyzer and pipeline tracker',
-        theme_color: '#0a0b0a',
-        background_color: '#0a0b0a',
+        theme_color: '#0C0C0B',
+        background_color: '#0C0C0B',
         display: 'standalone',
-        orientation: 'portrait',
         scope: '/InFlow/',
         start_url: '/InFlow/',
         icons: [
@@ -59,11 +58,6 @@ export default defineConfig({
               expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
               cacheableResponse: { statuses: [0, 200] }
             }
-          },
-          {
-            // Network-only for Anthropic API — never cache API calls
-            urlPattern: /^https:\/\/api\.anthropic\.com\/.*/i,
-            handler: 'NetworkOnly'
           }
         ]
       }
