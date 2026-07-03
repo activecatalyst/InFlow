@@ -32,6 +32,10 @@ const T = {
   body:    "'DM Sans', sans-serif",
 };
 
+// Single source of truth for the Anthropic model. Claude Sonnet 5 is the
+// current best-quality / lowest-cost option for this workload.
+const MODEL = "claude-sonnet-5";
+
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
 const KEYS = {
   resume:       "inflow_resume_v2",
@@ -255,8 +259,9 @@ const parseInterviewRisk = (text) => {
 };
 
 const parseVerdict = (text) => {
-  const m = text.match(/## STEP 7[^\n]*\n([\s\S]*?)(?=\n## |$)/i)
-          || text.match(/## STEP 8[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
+  // Only STEP 7 is the Honest Verdict. Do NOT fall back to STEP 8
+  // (Decision Confidence) — rendering that section here would be wrong content.
+  const m = text.match(/## STEP 7[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
   if (!m) return null;
   const raw = m[1].trim();
   const bottomLine = raw.match(/Bottom line:\s*(.+?)(?:\n|$)/i)?.[1]?.trim() || null;
@@ -270,11 +275,6 @@ const parseOdds = (text) => {
   return prob || ats ? { probability: prob ? parseInt(prob) : null, ats: ats ? parseInt(ats) : null } : null;
 };
 
-const parseNextSteps = (text) => {
-  const m = text.match(/## STEP 7[^\n]*\n([\s\S]*?)(?=\n## STEP 8|$)/i);
-  if (!m) return [];
-  return [...m[1].matchAll(/ACTION \d+:\s*(.+)/gi)].map(a => a[1].trim());
-};
 
 const parseDecisionConfidence = (text) => {
   const m = text.match(/## STEP 8[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
@@ -579,6 +579,11 @@ const GLOBAL_CSS = `
   ::-webkit-scrollbar-thumb { background: #35352F; border-radius: 2px; }
   select option { background: #141412; color: #F5F4F0; }
   a { color: ${C.blue}; }
+  /* Keep the top nav from overflowing on phones */
+  @media (max-width: 560px) {
+    nav { padding: 0 14px !important; }
+    .nav-status { display: none !important; }
+  }
 `;
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
@@ -872,7 +877,7 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
         : `Analyze this job posting:\n\n${input}`;
 
       const body = {
-        model: "claude-sonnet-4-6",
+        model: MODEL,
         max_tokens: 6000,
         system: ANALYSIS_PROMPT(resume, activeTone),
         messages: [{ role: "user", content: userMsg }],
@@ -1066,7 +1071,7 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
           </div>
 
           {/* Score + Tier */}
-          <ScoreTierBubble scores={scores} tier={tier} odds={odds} tone={tone} onToneChange={handleToneChange} />
+          <ScoreTierBubble scores={scores} tier={tier} odds={odds} tone={tone} onToneChange={handleToneChange} isDemo={isDemo} />
 
           {/* Hiring Decision */}
           <HiringDecisionBubble decision={decision} />
@@ -1190,7 +1195,7 @@ const ResultBubble = ({ children, style }) => (
 );
 
 // ─── SCORE + TIER BUBBLE ──────────────────────────────────────────────────────
-function ScoreTierBubble({ scores, tier, odds, tone, onToneChange }) {
+function ScoreTierBubble({ scores, tier, odds, tone, onToneChange, isDemo }) {
   const impactColor = (pct) => pct >= 50 ? C.accent : pct >= 20 ? C.yellow : C.red;
 
   return (
@@ -1232,15 +1237,18 @@ function ScoreTierBubble({ scores, tier, odds, tone, onToneChange }) {
           </div>
         )}
 
-        {/* Tone toggle */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em" }}>TONE</span>
-          {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
-            <button key={key} onClick={() => onToneChange(key)} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0E1A13" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
-              <span>{cfg.icon}</span> {cfg.label}
-            </button>
-          ))}
-        </div>
+        {/* Tone toggle — re-runs the analysis, so only show it for real
+            (non-demo) results where an API key is present. */}
+        {!isDemo && (
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em" }}>TONE</span>
+            {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
+              <button key={key} onClick={() => onToneChange(key)} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0E1A13" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
+                <span>{cfg.icon}</span> {cfg.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </ResultBubble>
   );
@@ -1438,8 +1446,8 @@ function ImprovementsBubble({ improvements }) {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>{active + 1} / {improvements.length}</span>
-            <button onClick={() => setActive(a => Math.max(0, a - 1))} disabled={active === 0} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === 0 ? C.textDim : C.textSub, cursor: active === 0 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>←</button>
-            <button onClick={() => setActive(a => Math.min(improvements.length - 1, a + 1))} disabled={active === improvements.length - 1} style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === improvements.length - 1 ? C.textDim : C.textSub, cursor: active === improvements.length - 1 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>→</button>
+            <button onClick={() => setActive(a => Math.max(0, a - 1))} disabled={active === 0} aria-label="Previous improvement" style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === 0 ? C.textDim : C.textSub, cursor: active === 0 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>←</button>
+            <button onClick={() => setActive(a => Math.min(improvements.length - 1, a + 1))} disabled={active === improvements.length - 1} aria-label="Next improvement" style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === improvements.length - 1 ? C.textDim : C.textSub, cursor: active === improvements.length - 1 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>→</button>
           </div>
         </div>
 
@@ -1474,7 +1482,7 @@ function ImprovementsBubble({ improvements }) {
         {/* Dots */}
         <div style={{ padding: "10px 18px", display: "flex", gap: "6px", justifyContent: "center" }}>
           {improvements.map((_, i) => (
-            <button key={i} onClick={() => setActive(i)} style={{ width: i === active ? "18px" : "6px", height: "6px", borderRadius: "3px", background: i === active ? C.accent : C.border2, border: "none", cursor: "pointer", transition: "width 0.2s, background 0.2s", padding: 0 }} />
+            <button key={i} onClick={() => setActive(i)} aria-label={`Go to improvement ${i + 1}`} style={{ width: i === active ? "18px" : "6px", height: "6px", borderRadius: "3px", background: i === active ? C.accent : C.border2, border: "none", cursor: "pointer", transition: "width 0.2s, background 0.2s", padding: 0 }} />
           ))}
         </div>
       </div>
@@ -1599,7 +1607,7 @@ function EditJobModal({ job, onSave, onClose }) {
         : `Re-analyze this job based on the original analysis context:\n\n${job.analysis?.slice(0, 1000)}`;
 
       const body = {
-        model: "claude-sonnet-4-6", max_tokens: 6000,
+        model: MODEL, max_tokens: 6000,
         system: ANALYSIS_PROMPT(resume, "brutal"),
         messages: [{ role: "user", content: userMsg }],
       };
@@ -1633,6 +1641,7 @@ function EditJobModal({ job, onSave, onClose }) {
       });
     } catch (err) {
       setRerunError(err.message || "Re-analysis failed.");
+    } finally {
       setRerunning(false);
     }
   };
@@ -1740,7 +1749,7 @@ ${job.analysis?.slice(0, 800) || "No analysis available."}`;
       const headers  = { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
       if (!proxyUrl) headers["anthropic-dangerous-allow-browser"] = "true";
 
-      const res  = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 200, messages: [{ role: "user", content: prompt }] }) });
+      const res  = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ model: MODEL, max_tokens: 200, messages: [{ role: "user", content: prompt }] }) });
       const data = await res.json();
       if (data.error) throw new Error(data.error.message);
       const text   = data.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
@@ -2314,7 +2323,7 @@ export default function App() {
           ))}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div className="nav-status" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: C.accent, boxShadow: `0 0 8px ${C.accent}` }} />
           <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim, letterSpacing: "0.08em", textTransform: "uppercase" }}>Resume Active</span>
         </div>
