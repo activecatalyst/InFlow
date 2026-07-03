@@ -290,7 +290,9 @@ const parseDecisionConfidence = (text) => {
   const m = text.match(/## STEP 8[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
   if (!m) return null;
   const block = m[1].trim();
-  const level  = block.match(/Decision Confidence:\s*(High|Medium|Low)/i)?.[1] || null;
+  // Accept "Moderate" as an alias for "Medium" so either wording parses.
+  const raw    = block.match(/Decision Confidence:\s*(High|Medium|Moderate|Low)/i)?.[1] || null;
+  const level  = raw ? (/^mod/i.test(raw) ? "Medium" : raw[0].toUpperCase() + raw.slice(1).toLowerCase()) : null;
   const reason = block.match(/Reason:\s*([\s\S]*?)(?=\n## |$)/i)?.[1]?.trim() || null;
   return level ? { level, reason } : null;
 };
@@ -332,7 +334,7 @@ Every recommendation must pass all four tests before including it:
 4. High-impact — meaningfully improves interview odds.
 If a recommendation fails any of these tests, do not make it.
 
-Scoring calibration: A 9–10 represents exceptional alignment with this specific role and applicant pool — not simply meeting the job requirements. Most qualified candidates should score 6–7. Reserve 8+ for candidates who stand out against competitive peers.
+Scoring calibration: Scores reflect competitiveness against the expected applicant pool — not minimum qualifications. A 9–10 represents exceptional alignment with this specific role and applicant pool — not simply meeting the job requirements. Most qualified candidates should score 6–7. Reserve 8+ for candidates who stand out against competitive peers. Do not inflate weak fits.
 
 When given a job posting URL or description:
 1. If a URL, use web search to fetch the full posting. Confirm the role and company you found.
@@ -396,7 +398,7 @@ List exactly 3 hiring risks — gaps between what this role needs and what this 
 
 RISK 1: [name the gap — be specific]
 WHY IT MATTERS: [one sentence — tie directly to a stated or implied job requirement]
-LIKELIHOOD: [Low / Medium / High — how likely is this gap to affect the hiring decision]
+LIKELIHOOD: [Low / Medium / High — how likely this gap is to affect the hiring decision]
 MITIGATION: [one sentence — what this candidate can realistically do to address this before or during the interview]
 
 RISK 2: [name the gap]
@@ -414,31 +416,31 @@ Exactly 5 specific, high-impact edits. Only recommend changes the candidate can 
 
 IMPROVEMENT 1:
 CURRENT: [exact text from their resume — or "Missing — not present on resume" if absent]
-PROBLEM: [what is wrong or weak — be specific, no generic advice]
+ISSUE: [what is wrong or weak — be specific, no generic advice]
 IMPROVED: [your rewrite — strong verb, specific outcome, natural keyword integration]
 WHY IT WORKS: [one sentence — tied to this specific role, not general resume advice]
 
 IMPROVEMENT 2:
 CURRENT: [current text or "Missing"]
-PROBLEM: [the problem]
+ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why it matters for this role]
 
 IMPROVEMENT 3:
 CURRENT: [current text or "Missing"]
-PROBLEM: [the problem]
+ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why]
 
 IMPROVEMENT 4:
 CURRENT: [current text or "Missing"]
-PROBLEM: [the problem]
+ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why]
 
 IMPROVEMENT 5:
 CURRENT: [current text or "Missing"]
-PROBLEM: [the problem]
+ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why]
 
@@ -536,31 +538,31 @@ MITIGATION: Learn the basic claims lifecycle before the phone screen and connect
 ## STEP 5 — RESUME IMPROVEMENTS
 IMPROVEMENT 1:
 CURRENT: Coordinated cross-functional projects across manufacturing and quality teams
-PROBLEM: "Coordinated" is a scheduling verb — it hides the analysis this role is hiring for.
+ISSUE: "Coordinated" is a scheduling verb — it hides the analysis this role is hiring for.
 IMPROVED: Analyzed cross-functional production workflows across manufacturing and quality teams, identifying bottlenecks that cut changeover time 18%
 WHY IT WORKS: Leads with the analyst verb the JD repeats and lands the metric inside the first line the recruiter reads.
 
 IMPROVEMENT 2:
 CURRENT: Missing — not present on resume
-PROBLEM: The posting requires requirements documentation and this resume never uses the phrase, even though the work happened.
+ISSUE: The posting requires requirements documentation and this resume never uses the phrase, even though the work happened.
 IMPROVED: Gathered and documented business requirements from 4 stakeholder groups for a line-transfer project delivered on schedule
 WHY IT WORKS: Puts the exact required phrase on the page attached to a real, defensible project.
 
 IMPROVEMENT 3:
 CURRENT: Proficient in Microsoft Excel
-PROBLEM: Undifferentiated — every applicant says this, and it wastes the skills line the ATS reads first.
+ISSUE: Undifferentiated — every applicant says this, and it wastes the skills line the ATS reads first.
 IMPROVED: Excel (pivot tables, lookups, capacity models); SQL fundamentals (in progress)
 WHY IT WORKS: Specificity converts a filler line into keyword coverage the screen is checking for.
 
 IMPROVEMENT 4:
 CURRENT: Responsible for daily production reporting
-PROBLEM: "Responsible for" states a duty, not an outcome, and buries a genuinely relevant deliverable.
+ISSUE: "Responsible for" states a duty, not an outcome, and buries a genuinely relevant deliverable.
 IMPROVED: Built daily production reports used by 3 department leads to reallocate staffing, reducing overtime spend 12%
 WHY IT WORKS: Turns passive reporting into decision-support — which is this job's actual function.
 
 IMPROVEMENT 5:
 CURRENT: Objective: Seeking a challenging business analyst position
-PROBLEM: Objective statements spend prime real estate telling the recruiter what you want instead of what they get.
+ISSUE: Objective statements spend prime real estate telling the recruiter what you want instead of what they get.
 IMPROVED: Operations professional with 5 years translating production data into process improvements across regulated manufacturing — moving that toolkit into business analysis.
 WHY IT WORKS: A summary that names the transition directly disarms the title-gap concern before the recruiter forms it.
 
@@ -1499,7 +1501,7 @@ function ImprovementsBubble({ improvements }) {
             )}
             {(imp.problem || imp.issue) && (
               <div style={{ padding: "10px 18px", background: "#1a1400", borderBottom: `1px solid ${C.border}` }}>
-                <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.yellow, letterSpacing: "0.1em", margin: "0 0 4px", opacity: 0.8 }}>PROBLEM</p>
+                <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.yellow, letterSpacing: "0.1em", margin: "0 0 4px", opacity: 0.8 }}>ISSUE</p>
                 <p style={{ fontFamily: T.body, fontSize: "13px", color: C.yellow, margin: 0, lineHeight: 1.6, opacity: 0.9 }}>{imp.problem || imp.issue}</p>
               </div>
             )}
