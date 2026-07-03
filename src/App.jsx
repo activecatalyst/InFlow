@@ -67,13 +67,15 @@ const STATUSES = [
 const SM = Object.fromEntries(STATUSES.map(s => [s.key, s]));
 
 const TIERS = [
-  { key: "top",     label: "Top-priority application",  color: C.accent,  bg: "#0E1A13" },
-  { key: "strong",  label: "Strong apply",               color: C.mint,    bg: "#0D1D14" },
-  { key: "tailor",  label: "Apply with light tailoring", color: C.yellow,  bg: "#1C1808" },
-  { key: "stretch", label: "Realistic stretch",          color: C.orange,  bg: "#1C1309" },
-  { key: "low",     label: "Low-priority stretch",       color: C.red,     bg: "#1D100E" },
-  { key: "skip",    label: "Not recommended",            color: "#6b7280", bg: "#161614" },
+  { key: "top",     label: "Strong Apply",         color: C.accent,  bg: "#0E1A13", aliases: ["Top-priority application"] },
+  { key: "strong",  label: "Apply",                color: C.mint,    bg: "#0D1D14", aliases: ["Strong apply"] },
+  { key: "tailor",  label: "Apply with Tailoring", color: C.yellow,  bg: "#1C1808", aliases: ["Apply with light tailoring"] },
+  { key: "stretch", label: "Stretch Role",         color: C.orange,  bg: "#1C1309", aliases: ["Realistic stretch"] },
+  { key: "low",     label: "Low Probability",      color: C.red,     bg: "#1D100E", aliases: ["Low-priority stretch"] },
+  { key: "skip",    label: "Do Not Apply",         color: "#6b7280", bg: "#161614", aliases: ["Not recommended"] },
 ];
+// Resolve a tier by its current label or any legacy alias (keeps old saved jobs working).
+const findTier = (label) => label ? TIERS.find(t => t.label === label || t.aliases?.includes(label)) : null;
 
 const PHASES = [
   "Fetching job posting...",
@@ -110,6 +112,14 @@ const parseScores = (text) => {
     hm: h ? parseFloat(h[1]) : null,
     transferability: t ? parseFloat(t[1]) : null,
   };
+};
+
+// Full scorecard — every "SCORE: <Dimension> | <X>/10 | <reason>" line from STEP 1B.
+const parseScorecard = (text) => {
+  const m = text.match(/## STEP 1B[^\n]*\n([\s\S]*?)(?=\n## STEP 2|$)/i);
+  const block = m ? m[1] : text;
+  return [...block.matchAll(/^\s*(?:[-*]\s*)?SCORE:\s*(.+?)\s*\|\s*(\d+(?:\.\d+)?)\s*\/\s*10\s*\|\s*(.+?)\s*$/gim)]
+    .map(x => ({ name: x[1].replace(/[*_]/g, "").trim(), score: parseFloat(x[2]), reason: x[3].trim() }));
 };
 
 // Deterministic title/company extraction from the STEP 0 metadata block the
@@ -151,9 +161,11 @@ const scoreLabel = (s) => {
 };
 
 const parseTier = (text) => {
-  const labels = TIERS.map(t => t.label);
-  for (const l of labels) {
-    if (text.includes(l)) return TIERS.find(t => t.label === l);
+  // Check current labels first, then legacy aliases, longest-first to avoid
+  // matching "Apply" inside "Apply with Tailoring".
+  const candidates = TIERS.flatMap(t => [t.label, ...(t.aliases || [])]).sort((a, b) => b.length - a.length);
+  for (const l of candidates) {
+    if (text.includes(l)) return findTier(l);
   }
   return null;
 };
@@ -211,11 +223,20 @@ const parseStrengths = (text) => {
   const xferEntries = block.split(/TRANSFERABLE \d+:/gi).slice(1);
   for (const entry of xferEntries) {
     const name = entry.trim().split("\n")[0].trim();
-    const how = entry.match(/HOW IT TRANSFERS:\s*([\s\S]*?)(?=TRANSFERABLE \d|$)/i)?.[1]?.trim();
+    const how = entry.match(/HOW IT TRANSFERS:\s*([\s\S]*?)(?=TRANSFERABLE \d|TECHNICAL STRENGTHS|LEADERSHIP STRENGTHS|$)/i)?.[1]?.trim();
     if (name) transferable.push({ name, how });
   }
 
-  return { strengths, transferable };
+  // Technical / leadership strengths — short comma-separated lists.
+  const grabList = (label) => {
+    const line = block.match(new RegExp(`${label}:\\s*(.+)`, "i"))?.[1]?.trim();
+    if (!line || /^(none|n\/a)\b/i.test(line)) return [];
+    return line.split(/[,;]/).map(s => s.replace(/[*_\[\]]/g, "").trim()).filter(Boolean).slice(0, 8);
+  };
+  const technical  = grabList("TECHNICAL STRENGTHS");
+  const leadership = grabList("LEADERSHIP STRENGTHS");
+
+  return { strengths, transferable, technical, leadership };
 };
 
 const parseRisks = (text) => {
@@ -399,7 +420,21 @@ KEY_REQUIREMENTS: [3–6 must-have skills or qualifications from the posting, co
 - Transferability: [X]/10 — [one-line reason; how well adjacent / transferable experience covers this role's competencies]
 - ATS Alignment: [High / Medium / Low] — approximately [X]% keyword match (one input only — do not let this drive Recruiter Confidence)
 - Interview Probability: [X]%
-- Overall Recommendation: [choose exactly one: Top-priority application | Strong apply | Apply with light tailoring | Realistic stretch | Low-priority stretch | Not recommended]
+- Overall Recommendation: [choose exactly one: Strong Apply | Apply | Apply with Tailoring | Stretch Role | Low Probability | Do Not Apply]
+
+## STEP 1B — FULL SCORECARD
+Score each dimension 0–10 and give a one-line, evidence-based reason. Never output a number without a reason. Format each line EXACTLY as: SCORE: <Dimension> | <X>/10 | <reason>
+SCORE: Overall Fit | [X]/10 | [reason]
+SCORE: ATS Match | [X]/10 | [reason]
+SCORE: Recruiter Confidence | [X]/10 | [reason]
+SCORE: Hiring Manager Confidence | [X]/10 | [reason]
+SCORE: Transferability | [X]/10 | [reason]
+SCORE: Interview Probability | [X]/10 | [reason]
+SCORE: Resume Quality | [X]/10 | [reason]
+SCORE: Layout | [X]/10 | [reason]
+SCORE: Technical Alignment | [X]/10 | [reason]
+SCORE: Business Competencies | [X]/10 | [reason]
+SCORE: Risk Assessment | [X]/10 | [reason — higher means lower/less concerning risk]
 
 ## STEP 2 — HIRING DECISION
 Would I interview this candidate? [Yes / No / Conditional]
@@ -433,6 +468,9 @@ HOW IT TRANSFERS: [one sentence — specifically how this experience maps to a r
 
 TRANSFERABLE 2: [name the experience — only include if genuinely applicable]
 HOW IT TRANSFERS: [one sentence]
+
+TECHNICAL STRENGTHS: [comma-separated specific tools/systems/technical skills genuinely evidenced on the resume, or "None obvious"]
+LEADERSHIP STRENGTHS: [comma-separated leadership / ownership / scope signals genuinely evidenced, or "None obvious"]
 
 ## STEP 4 — HIRING RISKS
 List exactly 3 hiring risks — gaps between what this role needs and what this resume shows. For each:
@@ -534,7 +572,20 @@ LOCATION: San Diego, CA (Hybrid)
 - Transferability: 8/10 — Process improvement, stakeholder coordination, and reporting map cleanly onto the core analyst competencies.
 - ATS Alignment: Medium — approximately 60% keyword match (one input only)
 - Interview Probability: 55%
-- Overall Recommendation: Apply with light tailoring
+- Overall Recommendation: Apply with Tailoring
+
+## STEP 1B — FULL SCORECARD
+SCORE: Overall Fit | 7/10 | Core operations competencies line up; the only real distance is the analyst title and SQL.
+SCORE: ATS Match | 6/10 | Missing SQL/Tableau keywords cost literal match points the human read recovers.
+SCORE: Recruiter Confidence | 7/10 | A recruiter screens this — the pivot is credible and the metrics survive the scan.
+SCORE: Hiring Manager Confidence | 6/10 | Could run requirements sessions day one; SQL depth is the open question.
+SCORE: Transferability | 8/10 | Process improvement, coordination, and reporting map straight onto the role.
+SCORE: Interview Probability | 6/10 | Roughly a coin-flip today; the five edits push it toward a probable screen.
+SCORE: Resume Quality | 7/10 | Clear progression and quantified outcomes; a few duty-based bullets dilute it.
+SCORE: Layout | 8/10 | Clean, scannable, metrics-forward — nothing fights the 10-second read.
+SCORE: Technical Alignment | 5/10 | Excel is present but the required SQL/BI stack is thin.
+SCORE: Business Competencies | 8/10 | Strong evidence of process, stakeholder, and reporting ownership.
+SCORE: Risk Assessment | 6/10 | Gaps are real but mostly teachable — no outright deal-breakers.
 
 ## STEP 2 — HIRING DECISION
 Would I interview this candidate? Conditional
@@ -568,6 +619,9 @@ HOW IT TRANSFERS: Capacity modeling is 80% of the demand-forecasting responsibil
 
 TRANSFERABLE 2: Training-material development for new processes
 HOW IT TRANSFERS: The role owns "documentation and end-user enablement," which this candidate has done, just under a different name.
+
+TECHNICAL STRENGTHS: Excel (pivot tables, lookups), ERP data, production reporting, capacity modeling
+LEADERSHIP STRENGTHS: Cross-functional coordination, stakeholder alignment, process ownership
 
 ## STEP 4 — HIRING RISKS
 RISK 1: No SQL or BI tooling on the resume
@@ -637,7 +691,7 @@ COACHING: Anchor it in the regulated-environment overlap — change control, doc
 ## STEP 7 — HONEST VERDICT
 This is a live application, not a courtesy one. The operations-to-analyst pivot is credible on the evidence, and the promotion history buys real benefit of the doubt. But as written, the resume makes the recruiter do the translation work, and recruiters don't translate at screen speed — they skim and sort. Make the five edits, especially the SQL line and the summary reframe, and this moves from a coin-flip to a probable phone screen. Apply without the edits and the ATS or a tired human likely files it under "coordinator, not analyst."
 
-Bottom line: Apply with light tailoring — one focused evening of edits is the difference between the maybe pile and the interview list.
+Bottom line: Apply with Tailoring — one focused evening of edits is the difference between the maybe pile and the interview list.
 
 ## STEP 8 — DECISION CONFIDENCE
 Decision Confidence: High
@@ -715,6 +769,7 @@ const Field = ({ value, onChange, placeholder, multiline, rows, disabled, mono, 
 
 // ─── STEP ACCORDION ───────────────────────────────────────────────────────────
 const STEP_LABELS = {
+  "STEP 1B": "Full Scorecard",
   "STEP 1": "Executive Summary",
   "STEP 2": "Hiring Decision",
   "STEP 3": "Strengths & Transferable Experience",
@@ -736,7 +791,7 @@ function StepAccordion({ text }) {
     for (let i = 1; i < parts.length; i += 2) {
       const header = parts[i];
       const body   = parts[i + 1] || "";
-      const key    = header.match(/STEP \d+/)?.[0] || header;
+      const key    = header.match(/STEP \d+[A-Z]?/)?.[0] || header;
       if (key === "STEP 0") continue; // machine-facing metadata — parsed, not displayed
       const friendlyTitle = Object.entries(STEP_LABELS).find(([k]) => header.includes(k))?.[1] || header;
       sections.push({ key, header, friendlyTitle, body });
@@ -916,11 +971,14 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
   const [error, setError]           = useState("");
   const [tone, setTone]             = useState("recruiter");
   const [scores, setScores]         = useState({ recruiter: null, hm: null });
+  const [scorecard, setScorecard]   = useState([]);
   const [tier, setTier]             = useState(null);
   const [odds, setOdds]             = useState(null);
   const [decision, setDecision]     = useState(null);
   const [strengths, setStrengths]       = useState([]);
   const [transferable, setTransferable] = useState([]);
+  const [technical, setTechnical]       = useState([]);
+  const [leadership, setLeadership]     = useState([]);
   const [risks, setRisks]               = useState([]);
   const [improvements, setImprovements] = useState([]);
   const [interviewRisk, setInterviewRisk] = useState([]);
@@ -942,8 +1000,8 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
     if (!apiKey) { setError("No API key found. Go to Settings and add your Anthropic API key."); return; }
 
     setLoading(true); setResult(""); setPhase("loading"); setPhaseIdx(0); setError("");
-    setScores({ recruiter: null, hm: null }); setTier(null); setOdds(null);
-    setDecision(null); setStrengths([]); setTransferable([]); setRisks([]); setImprovements([]);
+    setScores({ recruiter: null, hm: null }); setScorecard([]); setTier(null); setOdds(null);
+    setDecision(null); setStrengths([]); setTransferable([]); setTechnical([]); setLeadership([]); setRisks([]); setImprovements([]);
     setInterviewRisk([]); setVerdict(null); setConfidence(null); setShowFull(false);
 
     const interval = setInterval(() => setPhaseIdx(p => (p + 1) % PHASES.length), 1800);
@@ -978,7 +1036,7 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
       const parsedTier   = parseTier(text) || tierFromScores(parsedScores.recruiter, parsedScores.hm);
       const parsedOdds   = parseOdds(text);
       const parsedDec    = parseHiringDecision(text);
-      const { strengths: parsedStr, transferable: parsedXfer } = parseStrengths(text);
+      const { strengths: parsedStr, transferable: parsedXfer, technical: parsedTech, leadership: parsedLead } = parseStrengths(text);
       const parsedRisks  = parseRisks(text);
       const parsedImprv  = parseImprovements(text).length ? parseImprovements(text) : parseEdits(text);
       const parsedIR     = parseInterviewRisk(text);
@@ -987,11 +1045,14 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
 
       setResult(text);
       setScores(parsedScores);
+      setScorecard(parseScorecard(text));
       setTier(parsedTier);
       setOdds(parsedOdds);
       setDecision(parsedDec);
       setStrengths(parsedStr || []);
       setTransferable(parsedXfer || []);
+      setTechnical(parsedTech || []);
+      setLeadership(parsedLead || []);
       setRisks(parsedRisks);
       setImprovements(parsedImprv);
       setInterviewRisk(parsedIR);
@@ -1065,11 +1126,12 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
     const s = parseScores(text);
     setResult(text);
     setScores(s);
+    setScorecard(parseScorecard(text));
     setTier(parseTier(text) || tierFromScores(s.recruiter, s.hm));
     setOdds(parseOdds(text));
     setDecision(parseHiringDecision(text));
-    const { strengths: st, transferable: xf } = parseStrengths(text);
-    setStrengths(st || []); setTransferable(xf || []);
+    const { strengths: st, transferable: xf, technical: tc, leadership: ld } = parseStrengths(text);
+    setStrengths(st || []); setTransferable(xf || []); setTechnical(tc || []); setLeadership(ld || []);
     setRisks(parseRisks(text));
     setImprovements(parseImprovements(text));
     setInterviewRisk(parseInterviewRisk(text));
@@ -1084,8 +1146,8 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
     savedJobIdRef.current = null;
     setIsDemo(false);
     setInput(""); setResult(""); setPhase("idle"); setError("");
-    setScores({ recruiter: null, hm: null }); setTier(null); setOdds(null);
-    setDecision(null); setStrengths([]); setTransferable([]); setRisks([]); setImprovements([]);
+    setScores({ recruiter: null, hm: null }); setScorecard([]); setTier(null); setOdds(null);
+    setDecision(null); setStrengths([]); setTransferable([]); setTechnical([]); setLeadership([]); setRisks([]); setImprovements([]);
     setInterviewRisk([]); setVerdict(null); setConfidence(null); setShowFull(false);
   };
 
@@ -1170,11 +1232,14 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
           {/* Score + Tier */}
           <ScoreTierBubble scores={scores} tier={tier} odds={odds} tone={tone} onToneChange={handleToneChange} isDemo={isDemo} />
 
+          {/* Full explained scorecard */}
+          <ScorecardBubble scorecard={scorecard} />
+
           {/* Hiring Decision */}
           <HiringDecisionBubble decision={decision} />
 
           {/* Strengths + Risks */}
-          <StrengthsRisksBubble strengths={strengths} transferable={transferable} risks={risks} />
+          <StrengthsRisksBubble strengths={strengths} transferable={transferable} technical={technical} leadership={leadership} risks={risks} />
 
           {/* Resume Improvements */}
           <ImprovementsBubble improvements={improvements} />
@@ -1351,6 +1416,45 @@ function ScoreTierBubble({ scores, tier, odds, tone, onToneChange, isDemo }) {
   );
 }
 
+// ─── FULL SCORECARD BUBBLE ────────────────────────────────────────────────────
+function ScorecardBubble({ scorecard }) {
+  const [open, setOpen] = useState(false);
+  if (!scorecard?.length) return null;
+  return (
+    <ResultBubble>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "4px 18px 18px 18px", overflow: "hidden" }}>
+        <button onClick={() => setOpen(o => !o)} style={{ width: "100%", padding: "14px 18px", background: "transparent", border: "none", borderBottom: open ? `1px solid ${C.border}` : "none", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style={{ width: "3px", height: "12px", background: C.accent, borderRadius: "2px" }} />
+            <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.12em", textTransform: "uppercase" }}>Full Scorecard</span>
+            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>{scorecard.length} metrics</span>
+          </div>
+          <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>{open ? "▲ Hide" : "▼ Show"}</span>
+        </button>
+        {open && (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {scorecard.map((m, i) => (
+              <div key={i} style={{ padding: "12px 18px", borderBottom: i < scorecard.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "6px" }}>
+                  <span style={{ fontFamily: T.body, fontSize: "13px", color: C.text, fontWeight: 600 }}>{m.name}</span>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: "3px", flexShrink: 0 }}>
+                    <span style={{ fontFamily: T.display, fontSize: "18px", color: scoreColor(m.score), fontWeight: 800, lineHeight: 1 }}>{m.score}</span>
+                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim }}>/10</span>
+                  </div>
+                </div>
+                <div style={{ height: "3px", background: C.border2, borderRadius: "2px", marginBottom: "7px" }}>
+                  <div style={{ height: "100%", width: `${Math.max(0, Math.min(10, m.score)) * 10}%`, background: scoreColor(m.score), borderRadius: "2px" }} />
+                </div>
+                {m.reason && <p style={{ fontFamily: T.body, fontSize: "12px", color: C.textSub, margin: 0, lineHeight: 1.55 }}>{m.reason}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </ResultBubble>
+  );
+}
+
 // ─── HIRING DECISION BUBBLE ───────────────────────────────────────────────────
 function HiringDecisionBubble({ decision }) {
   if (!decision) return null;
@@ -1416,9 +1520,11 @@ function HiringDecisionBubble({ decision }) {
 }
 
 // ─── STRENGTHS + RISKS BUBBLE ─────────────────────────────────────────────────
-function StrengthsRisksBubble({ strengths, transferable, risks }) {
+function StrengthsRisksBubble({ strengths, transferable, technical, leadership, risks }) {
   const allStrengths = strengths || [];
   const allTransferable = transferable || [];
+  const techList = technical || [];
+  const leadList = leadership || [];
   const hasTransferable = allTransferable.length > 0;
   const tabs = [
     { key: "strengths",    label: "Strengths",    color: C.accent },
@@ -1467,6 +1573,26 @@ function StrengthsRisksBubble({ strengths, transferable, risks }) {
                 </div>
               </div>
             ))}
+            {(techList.length > 0 || leadList.length > 0) && (
+              <div style={{ padding: "14px 20px", borderTop: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: "12px" }}>
+                {techList.length > 0 && (
+                  <div>
+                    <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.blue, letterSpacing: "0.1em", margin: "0 0 7px" }}>TECHNICAL STRENGTHS</p>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                      {techList.map((t, i) => <span key={i} style={{ fontFamily: T.mono, fontSize: "11px", color: C.blue, background: `${C.blue}12`, border: `1px solid ${C.blue}33`, borderRadius: "5px", padding: "3px 9px" }}>{t}</span>)}
+                    </div>
+                  </div>
+                )}
+                {leadList.length > 0 && (
+                  <div>
+                    <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.mint, letterSpacing: "0.1em", margin: "0 0 7px" }}>LEADERSHIP STRENGTHS</p>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                      {leadList.map((t, i) => <span key={i} style={{ fontFamily: T.mono, fontSize: "11px", color: C.mint, background: `${C.mint}12`, border: `1px solid ${C.mint}33`, borderRadius: "5px", padding: "3px 9px" }}>{t}</span>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -1497,8 +1623,13 @@ function StrengthsRisksBubble({ strengths, transferable, risks }) {
         {/* Risks */}
         {tab === "risks" && (
           <div style={{ display: "flex", flexDirection: "column" }}>
-            {(risks || []).map((r, i) => (
-              <div key={i} style={{ padding: "16px 20px", borderBottom: i < risks.length - 1 ? `1px solid ${C.border}` : "none" }}>
+            {[...(risks || [])]
+              .sort((a, b) => {
+                const order = { "critical gap": 0, "learnable": 1, "transferable": 2, "already demonstrated": 3 };
+                return (order[a.teachability?.toLowerCase()] ?? 4) - (order[b.teachability?.toLowerCase()] ?? 4);
+              })
+              .map((r, i, arr) => (
+              <div key={i} style={{ padding: "16px 20px", borderBottom: i < arr.length - 1 ? `1px solid ${C.border}` : "none" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "10px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <div style={{ width: "3px", height: "12px", background: C.orange, borderRadius: "2px" }} />
@@ -2072,7 +2203,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
           {filtered.map(job => {
             const st  = SM[job.status] || STATUSES[0];
             const exp = expandedId === job.id;
-            const jobTier = job.tier ? TIERS.find(t => t.label === job.tier) : null;
+            const jobTier = findTier(job.tier);
             return (
               <div key={job.id} style={{ background: C.surface, border: `1px solid ${exp ? C.border2 : C.border}`, borderRadius: "12px", overflow: "hidden" }}>
                 <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: "14px" }}>
