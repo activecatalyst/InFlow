@@ -101,9 +101,15 @@ const fmtShort = (iso) => {
 };
 
 const parseScores = (text) => {
-  const r = text.match(/recruiter score[:\s*_]*(\d+(?:\.\d+)?)/i);
-  const h = text.match(/hiring manager score[:\s*_]*(\d+(?:\.\d+)?)/i);
-  return { recruiter: r ? parseFloat(r[1]) : null, hm: h ? parseFloat(h[1]) : null };
+  // "Recruiter Confidence" is the current wording; "Recruiter Score" kept as a fallback.
+  const r = text.match(/recruiter (?:confidence|score)[:\s*_]*(\d+(?:\.\d+)?)/i);
+  const h = text.match(/hiring manager (?:score|confidence)[:\s*_]*(\d+(?:\.\d+)?)/i);
+  const t = text.match(/transferability[:\s*_]*(\d+(?:\.\d+)?)/i);
+  return {
+    recruiter: r ? parseFloat(r[1]) : null,
+    hm: h ? parseFloat(h[1]) : null,
+    transferability: t ? parseFloat(t[1]) : null,
+  };
 };
 
 // Deterministic title/company extraction from the STEP 0 metadata block the
@@ -220,11 +226,12 @@ const parseRisks = (text) => {
   const entries = block.split(/RISK \d+:/gi).slice(1);
   for (const entry of entries) {
     const name = entry.trim().split("\n")[0].trim();
-    const why        = entry.match(/WHY IT MATTERS:\s*([\s\S]*?)(?=LIKELIHOOD:|HIRING IMPACT:|RISK \d|$)/i)?.[1]?.trim();
+    const why        = entry.match(/WHY IT MATTERS:\s*([\s\S]*?)(?=LIKELIHOOD:|HIRING IMPACT:|TEACHABILITY:|RISK \d|$)/i)?.[1]?.trim();
     const likelihood = entry.match(/LIKELIHOOD:\s*(Low|Medium|High)/i)?.[1]
                     || entry.match(/HIRING IMPACT:\s*(Low|Medium|High)/i)?.[1]; // fallback
+    const teachability = entry.match(/TEACHABILITY:\s*(Already Demonstrated|Transferable|Learnable|Critical Gap)/i)?.[1];
     const mitigation = entry.match(/MITIGATION:\s*([\s\S]*?)(?=RISK \d|$)/i)?.[1]?.trim();
-    if (name) risks.push({ name, why, likelihood, mitigation });
+    if (name) risks.push({ name, why, likelihood, teachability, mitigation });
   }
   return risks;
 };
@@ -240,8 +247,9 @@ const parseImprovements = (text) => {
       const problem  = b.match(/PROBLEM:\s*([\s\S]*?)(?=IMPROVED:|$)/i)?.[1]?.trim()
                     || b.match(/ISSUE:\s*([\s\S]*?)(?=IMPROVED:|$)/i)?.[1]?.trim(); // fallback
       const improved = b.match(/IMPROVED:\s*([\s\S]*?)(?=WHY IT WORKS:|$)/i)?.[1]?.trim();
-      const why      = b.match(/WHY IT WORKS:\s*([\s\S]*?)(?=IMPROVEMENT \d+:|$)/i)?.[1]?.trim().split("---")[0].trim();
-      return current ? { current, problem, improved, why } : null;
+      const why      = b.match(/WHY IT WORKS:\s*([\s\S]*?)(?=ESTIMATED LIFT:|IMPROVEMENT \d+:|$)/i)?.[1]?.trim().split("---")[0].trim();
+      const lift     = b.match(/ESTIMATED LIFT:\s*(\+?\s*\d+\s*%[^\n]*)/i)?.[1]?.trim();
+      return current ? { current, problem, improved, why, lift } : null;
     }).filter(Boolean);
 };
 
@@ -304,25 +312,41 @@ const stampDate = (job, newStatus) => {
 };
 
 // ─── ANALYSIS PROMPT ──────────────────────────────────────────────────────────
+// Evaluation lenses — real hiring perspectives, replacing the old tone modes.
+// Keyed default is "recruiter".
 const TONE_CONFIG = {
-  brutal: {
-    label: "Brutal",
-    icon: "⚡",
-    desc: "No filter. Raw recruiter truth.",
-    persona: "You are a brutally honest senior Fortune 500 corporate recruiter and hiring manager with 15+ years of experience. You are leaving detailed notes for a colleague who will make the final hiring call. No sugarcoating, no motivational language, no generic advice. Every statement must be directly tied to evidence in this resume or this job posting.",
-    verdictStyle: "Be completely direct about their real odds. If chances are low, say so plainly. Do not encourage false hope.",
-  },
-  honest: {
-    label: "Honest",
+  recruiter: {
+    label: "Recruiter",
     icon: "◎",
-    desc: "Clear feedback with a path forward.",
-    persona: "You are an experienced senior Fortune 500 corporate recruiter and hiring manager with 15+ years of experience. You are leaving detailed notes for a colleague who will make the final hiring call. Be honest and specific — identify gaps clearly, but frame each one with an actionable path forward. Every statement must be tied to evidence in this resume or this job posting.",
-    verdictStyle: "Be honest about their odds, but end with the single most actionable thing they can do to improve their chances.",
+    desc: "Balanced, practical, interview-focused.",
+    persona: "You are an experienced Fortune 500 corporate recruiter with 15+ years screening candidates for operations, program management, supply chain, sourcing, analytics, and business-operations roles at companies like Apple, Amazon, Microsoft, Nike, and Medtronic. You think in transferable competencies, not exact title or keyword matches — you routinely advance strong candidates who are only 60–70% keyword matches. You are leaving practical, balanced, interview-focused notes for a colleague.",
+    verdictStyle: "Give a balanced, practical read on whether you'd schedule a recruiter phone screen, and the single highest-ROI change that would move them up.",
+  },
+  senior: {
+    label: "Senior Recruiter",
+    icon: "◈",
+    desc: "Higher standards, scrutinizes evidence.",
+    persona: "You are a senior Fortune 500 recruiting lead with 20+ years of experience. You hold a higher bar than a line recruiter: you scrutinize whether each claimed competency is genuinely supported by work history and interview-defensible, and you weigh transferable evidence carefully rather than taking keywords at face value. You are leaving notes for the hiring team.",
+    verdictStyle: "Apply higher standards. Be explicit about which strengths are proven versus merely asserted, and whether the evidence holds up under scrutiny.",
+  },
+  hm: {
+    label: "Hiring Manager",
+    icon: "◆",
+    desc: "Can this person perform the role?",
+    persona: "You are the hiring manager who owns this role and its outcomes. You care less about whether the resume screens well and more about whether this person can actually perform after onboarding — depth of relevant competency, operational maturity, and role-specific readiness. You are assessing fit for YOUR team.",
+    verdictStyle: "Judge whether this person could perform the role after a normal ramp, and exactly what you'd need to probe in an interview to be confident.",
+  },
+  exec: {
+    label: "Executive Panel",
+    icon: "★",
+    desc: "Very selective, leadership-oriented.",
+    persona: "You are a selective executive interview panel evaluating for a senior or leadership-track role. You weigh leadership signals, business impact, judgment, and scope of ownership heavily, and you are comfortable passing on candidates who are merely competent. You are leaving notes for other executives.",
+    verdictStyle: "Be very selective. Focus on leadership signals, scope, and business impact; state plainly whether this candidate clears a senior bar.",
   },
 };
 
-const ANALYSIS_PROMPT = (resume, tone = "brutal") => {
-  const cfg = TONE_CONFIG[tone] || TONE_CONFIG.brutal;
+const ANALYSIS_PROMPT = (resume, tone = "recruiter") => {
+  const cfg = TONE_CONFIG[tone] || TONE_CONFIG.recruiter;
   return `${cfg.persona}
 
 Write like a recruiter leaving notes for another recruiter — direct, evidence-based, concise, practical. Do NOT write like a career coach, a motivational speaker, or a generic AI assistant. Every claim must be supported by the resume, the job posting, or established hiring practices. Avoid keyword stuffing, repetitive buzzwords, unsupported claims, and generic resume advice — recruiter readability always takes precedence over ATS optimization.
@@ -333,6 +357,22 @@ Every recommendation must pass all four tests before including it:
 3. Interview-defensible — the candidate can confidently explain it.
 4. High-impact — meaningfully improves interview odds.
 If a recommendation fails any of these tests, do not make it.
+
+Evaluate like a recruiter, not an ATS. Keyword similarity is only ONE input. Weigh demonstrated competency, transferable experience, operational maturity, interview defensibility, business impact, and leadership signals more heavily than literal keyword overlap.
+
+Recognize transferable competency clusters — credit equivalent evidence even when the exact term is absent:
+- Program / Project Management: project coordination, milestones, timelines, dependencies, risk tracking, status reporting, stakeholder communication, prioritization.
+- Supply Chain / Sourcing: planning, procurement, SAP/ERP, inventory, BOM, logistics, manufacturing, materials, supplier communication, finance partnership.
+- Business Operations: reporting, dashboards, Power BI, Excel, KPIs, workflow optimization, documentation, analytics.
+- Product Operations: cross-functional coordination, operational planning, process improvement, execution, product-lifecycle support.
+- Engineering Operations: BOM, ECR/ECO, configuration management, PLM, manufacturing engineering, change management.
+For example, treat SAP ERP + BOM + ECR/ECO + manufacturing + planning + supplier communication as strong evidence of Strategic Sourcing even if "RFx" never appears. Never require exact wording.
+
+Classify every missing requirement as one of: Already Demonstrated, Transferable, Learnable, or Critical Gap (e.g. Power BI → Already Demonstrated; RFx → Transferable; Negotiation → Learnable; CPA License or Security Clearance → Critical Gap). Only true deal-breakers are Critical Gaps.
+
+Before scoring, run this recruiter thinking model internally: (1) What story does the resume tell in the first 15 seconds? (2) Would I schedule a recruiter phone screen? (3) What strengths stand out? (4) Which missing requirements are teachable? (5) Which are true deal-breakers? (6) Would this candidate likely succeed after onboarding? (7) Does the resume feel authentic?
+
+Explain every score with a specific, evidence-based reason. Reward measurable business impact (what changed because of the candidate) and penalize keyword stuffing or resumes that merely repeat the job description.
 
 Scoring calibration: Scores reflect competitiveness against the expected applicant pool — not minimum qualifications. A 9–10 represents exceptional alignment with this specific role and applicant pool — not simply meeting the job requirements. Most qualified candidates should score 6–7. Reserve 8+ for candidates who stand out against competitive peers. Do not inflate weak fits.
 
@@ -354,9 +394,10 @@ TEAM: [the team, department, or org if stated, otherwise Unknown]
 KEY_REQUIREMENTS: [3–6 must-have skills or qualifications from the posting, comma-separated]
 
 ## STEP 1 — EXECUTIVE SUMMARY
-- Recruiter Score: [X]/10 — [one-line verdict, recruiter perspective]
-- Hiring Manager Score: [X]/10 — [one-line verdict, HM perspective]
-- ATS Alignment: [High / Medium / Low] — approximately [X]% keyword match
+- Recruiter Confidence: [X]/10 — [one-line reason; this is how likely a recruiter is to schedule a screen, NOT a keyword match — recruiters advance strong 60–70% keyword matches]
+- Hiring Manager Score: [X]/10 — [one-line reason; can this person actually perform the role]
+- Transferability: [X]/10 — [one-line reason; how well adjacent / transferable experience covers this role's competencies]
+- ATS Alignment: [High / Medium / Low] — approximately [X]% keyword match (one input only — do not let this drive Recruiter Confidence)
 - Interview Probability: [X]%
 - Overall Recommendation: [choose exactly one: Top-priority application | Strong apply | Apply with light tailoring | Realistic stretch | Low-priority stretch | Not recommended]
 
@@ -399,50 +440,58 @@ List exactly 3 hiring risks — gaps between what this role needs and what this 
 RISK 1: [name the gap — be specific]
 WHY IT MATTERS: [one sentence — tie directly to a stated or implied job requirement]
 LIKELIHOOD: [Low / Medium / High — how likely this gap is to affect the hiring decision]
+TEACHABILITY: [Already Demonstrated / Transferable / Learnable / Critical Gap — only true deal-breakers are Critical Gap]
 MITIGATION: [one sentence — what this candidate can realistically do to address this before or during the interview]
 
 RISK 2: [name the gap]
 WHY IT MATTERS: [why it matters]
 LIKELIHOOD: [likelihood level]
+TEACHABILITY: [teachability class]
 MITIGATION: [mitigation]
 
 RISK 3: [name the gap]
 WHY IT MATTERS: [why it matters]
 LIKELIHOOD: [likelihood level]
+TEACHABILITY: [teachability class]
 MITIGATION: [mitigation]
 
 ## STEP 5 — RESUME IMPROVEMENTS
-Exactly 5 specific, high-impact edits. Only recommend changes the candidate can genuinely defend in an interview. Do not invent experience. Optimize for clarity, recruiter readability, and ATS alignment — in that order. Format each exactly like this:
+Exactly 5 specific, high-impact edits, RANKED highest-ROI first (largest estimated interview-probability increase at the top). Only recommend changes the candidate can genuinely defend in an interview. Do not invent experience. Optimize for clarity, recruiter readability, and ATS alignment — in that order. Format each exactly like this:
 
 IMPROVEMENT 1:
 CURRENT: [exact text from their resume — or "Missing — not present on resume" if absent]
 ISSUE: [what is wrong or weak — be specific, no generic advice]
 IMPROVED: [your rewrite — strong verb, specific outcome, natural keyword integration]
 WHY IT WORKS: [one sentence — tied to this specific role, not general resume advice]
+ESTIMATED LIFT: [+X% — realistic estimated increase in interview probability from this single change]
 
 IMPROVEMENT 2:
 CURRENT: [current text or "Missing"]
 ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why it matters for this role]
+ESTIMATED LIFT: [+X%]
 
 IMPROVEMENT 3:
 CURRENT: [current text or "Missing"]
 ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why]
+ESTIMATED LIFT: [+X%]
 
 IMPROVEMENT 4:
 CURRENT: [current text or "Missing"]
 ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why]
+ESTIMATED LIFT: [+X%]
 
 IMPROVEMENT 5:
 CURRENT: [current text or "Missing"]
 ISSUE: [the issue]
 IMPROVED: [rewrite]
 WHY IT WORKS: [why]
+ESTIMATED LIFT: [+X%]
 
 ## STEP 6 — INTERVIEW RISK
 The 3 questions this interviewer will almost certainly ask — based on the gaps and signals in this specific resume. For each:
@@ -480,9 +529,10 @@ COMPANY: Meridian Health Systems
 LOCATION: San Diego, CA (Hybrid)
 
 ## STEP 1 — EXECUTIVE SUMMARY
-- Recruiter Score: 6.5/10 — Solid operations foundation with clear process-improvement evidence, but the title history doesn't say "analyst" yet.
+- Recruiter Confidence: 7/10 — Operations background reads as a credible analyst pivot; a recruiter would screen this despite the title gap.
 - Hiring Manager Score: 6/10 — Would trust this person to run a requirements-gathering session; would worry about SQL depth on day one.
-- ATS Alignment: Medium — approximately 60% keyword match
+- Transferability: 8/10 — Process improvement, stakeholder coordination, and reporting map cleanly onto the core analyst competencies.
+- ATS Alignment: Medium — approximately 60% keyword match (one input only)
 - Interview Probability: 55%
 - Overall Recommendation: Apply with light tailoring
 
@@ -523,16 +573,19 @@ HOW IT TRANSFERS: The role owns "documentation and end-user enablement," which t
 RISK 1: No SQL or BI tooling on the resume
 WHY IT MATTERS: The posting lists SQL as required and Tableau as preferred — a keyword screen may reject this resume before a human reads it.
 LIKELIHOOD: High
+TEACHABILITY: Learnable
 MITIGATION: Add a skills line for any real exposure (queries run, dashboards consumed) and start a two-week SQL fundamentals course to make the interview claim honest.
 
 RISK 2: Title history reads "coordinator," not "analyst"
 WHY IT MATTERS: Recruiters pattern-match on titles first; the gap forces them to infer the analyst work instead of seeing it.
 LIKELIHOOD: Medium
+TEACHABILITY: Transferable
 MITIGATION: Reframe section headers and bullet verbs around analysis and requirements rather than coordination and support.
 
 RISK 3: No direct healthcare-payer domain experience
 WHY IT MATTERS: The JD mentions claims-processing workflows twice, and competing applicants from payer backgrounds will have the vocabulary cold.
 LIKELIHOOD: Medium
+TEACHABILITY: Learnable
 MITIGATION: Learn the basic claims lifecycle before the phone screen and connect the regulated-manufacturing compliance parallel explicitly when asked.
 
 ## STEP 5 — RESUME IMPROVEMENTS
@@ -541,30 +594,35 @@ CURRENT: Coordinated cross-functional projects across manufacturing and quality 
 ISSUE: "Coordinated" is a scheduling verb — it hides the analysis this role is hiring for.
 IMPROVED: Analyzed cross-functional production workflows across manufacturing and quality teams, identifying bottlenecks that cut changeover time 18%
 WHY IT WORKS: Leads with the analyst verb the JD repeats and lands the metric inside the first line the recruiter reads.
+ESTIMATED LIFT: +5%
 
 IMPROVEMENT 2:
 CURRENT: Missing — not present on resume
 ISSUE: The posting requires requirements documentation and this resume never uses the phrase, even though the work happened.
 IMPROVED: Gathered and documented business requirements from 4 stakeholder groups for a line-transfer project delivered on schedule
 WHY IT WORKS: Puts the exact required phrase on the page attached to a real, defensible project.
+ESTIMATED LIFT: +4%
 
 IMPROVEMENT 3:
 CURRENT: Proficient in Microsoft Excel
 ISSUE: Undifferentiated — every applicant says this, and it wastes the skills line the ATS reads first.
 IMPROVED: Excel (pivot tables, lookups, capacity models); SQL fundamentals (in progress)
 WHY IT WORKS: Specificity converts a filler line into keyword coverage the screen is checking for.
+ESTIMATED LIFT: +3%
 
 IMPROVEMENT 4:
 CURRENT: Responsible for daily production reporting
 ISSUE: "Responsible for" states a duty, not an outcome, and buries a genuinely relevant deliverable.
 IMPROVED: Built daily production reports used by 3 department leads to reallocate staffing, reducing overtime spend 12%
 WHY IT WORKS: Turns passive reporting into decision-support — which is this job's actual function.
+ESTIMATED LIFT: +2%
 
 IMPROVEMENT 5:
 CURRENT: Objective: Seeking a challenging business analyst position
 ISSUE: Objective statements spend prime real estate telling the recruiter what you want instead of what they get.
 IMPROVED: Operations professional with 5 years translating production data into process improvements across regulated manufacturing — moving that toolkit into business analysis.
 WHY IT WORKS: A summary that names the transition directly disarms the title-gap concern before the recruiter forms it.
+ESTIMATED LIFT: +2%
 
 ## STEP 6 — INTERVIEW RISK
 QUESTION 1: You've never held an analyst title — walk me through the most analytical project you've owned end to end.
@@ -856,7 +914,7 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
   const [phase, setPhase]           = useState("idle");
   const [phaseIdx, setPhaseIdx]     = useState(0);
   const [error, setError]           = useState("");
-  const [tone, setTone]             = useState("brutal");
+  const [tone, setTone]             = useState("recruiter");
   const [scores, setScores]         = useState({ recruiter: null, hm: null });
   const [tier, setTier]             = useState(null);
   const [odds, setOdds]             = useState(null);
@@ -1243,7 +1301,7 @@ function ScoreTierBubble({ scores, tier, odds, tone, onToneChange, isDemo }) {
 
         {/* Scores row */}
         <div style={{ display: "flex", gap: "10px" }}>
-          {[{ label: "Recruiter Score", score: scores.recruiter }, { label: "Hiring Mgr Score", score: scores.hm }].map(({ label, score }) => (
+          {[{ label: "Recruiter Confidence", score: scores.recruiter }, { label: "Hiring Mgr Score", score: scores.hm }, { label: "Transferability", score: scores.transferability }].map(({ label, score }) => (
             <div key={label} style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: "12px", padding: "14px 16px" }}>
               <p style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.12em", textTransform: "uppercase", margin: "0 0 6px" }}>{label}</p>
               <div style={{ display: "flex", alignItems: "baseline", gap: "6px", marginBottom: "8px" }}>
@@ -1276,13 +1334,13 @@ function ScoreTierBubble({ scores, tier, odds, tone, onToneChange, isDemo }) {
           </div>
         )}
 
-        {/* Tone toggle — re-runs the analysis, so only show it for real
+        {/* Evaluation lens — re-runs the analysis, so only show it for real
             (non-demo) results where an API key is present. */}
         {!isDemo && (
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em" }}>TONE</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <span style={{ fontFamily: T.mono, fontSize: "10px", color: C.textDim, letterSpacing: "0.1em" }}>LENS</span>
             {Object.entries(TONE_CONFIG).map(([key, cfg]) => (
-              <button key={key} onClick={() => onToneChange(key)} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0E1A13" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
+              <button key={key} onClick={() => onToneChange(key)} title={cfg.desc} style={{ padding: "5px 14px", borderRadius: "20px", border: `1px solid ${tone === key ? C.accent : C.border}`, background: tone === key ? "#0E1A13" : "transparent", color: tone === key ? C.accent : C.textDim, fontFamily: T.mono, fontSize: "11px", letterSpacing: "0.08em", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
                 <span>{cfg.icon}</span> {cfg.label}
               </button>
             ))}
@@ -1446,11 +1504,21 @@ function StrengthsRisksBubble({ strengths, transferable, risks }) {
                     <div style={{ width: "3px", height: "12px", background: C.orange, borderRadius: "2px" }} />
                     <p style={{ fontFamily: T.display, fontSize: "14px", color: C.text, margin: 0, fontWeight: 700 }}>{r.name}</p>
                   </div>
-                  {r.likelihood && (
-                    <span style={{ fontFamily: T.mono, fontSize: "10px", color: likelihoodColor(r.likelihood), background: `${likelihoodColor(r.likelihood)}15`, border: `1px solid ${likelihoodColor(r.likelihood)}33`, borderRadius: "4px", padding: "3px 8px", letterSpacing: "0.08em", flexShrink: 0 }}>
-                      {r.likelihood.toUpperCase()} LIKELIHOOD
-                    </span>
-                  )}
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {r.teachability && (() => {
+                      const tc = { "already demonstrated": C.accent, "transferable": C.blue, "learnable": C.yellow, "critical gap": C.red }[r.teachability.toLowerCase()] || C.textSub;
+                      return (
+                        <span style={{ fontFamily: T.mono, fontSize: "10px", color: tc, background: `${tc}15`, border: `1px solid ${tc}33`, borderRadius: "4px", padding: "3px 8px", letterSpacing: "0.06em" }}>
+                          {r.teachability.toUpperCase()}
+                        </span>
+                      );
+                    })()}
+                    {r.likelihood && (
+                      <span style={{ fontFamily: T.mono, fontSize: "10px", color: likelihoodColor(r.likelihood), background: `${likelihoodColor(r.likelihood)}15`, border: `1px solid ${likelihoodColor(r.likelihood)}33`, borderRadius: "4px", padding: "3px 8px", letterSpacing: "0.08em" }}>
+                        {r.likelihood.toUpperCase()} LIKELIHOOD
+                      </span>
+                    )}
+                  </div>
                 </div>
                 {r.why && <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textMid, margin: "0 0 8px", lineHeight: 1.65, paddingLeft: "11px" }}>{r.why}</p>}
                 {r.mitigation && (
@@ -1484,6 +1552,9 @@ function ImprovementsBubble({ improvements }) {
             <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.12em", textTransform: "uppercase" }}>Resume Improvements</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {imp?.lift && (
+              <span title="Estimated increase in interview probability" style={{ fontFamily: T.mono, fontSize: "10px", color: C.accent, background: `${C.accent}18`, border: `1px solid ${C.accent}44`, borderRadius: "4px", padding: "3px 8px", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>{imp.lift.replace(/\s+/g, "")}</span>
+            )}
             <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>{active + 1} / {improvements.length}</span>
             <button onClick={() => setActive(a => Math.max(0, a - 1))} disabled={active === 0} aria-label="Previous improvement" style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === 0 ? C.textDim : C.textSub, cursor: active === 0 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>←</button>
             <button onClick={() => setActive(a => Math.min(improvements.length - 1, a + 1))} disabled={active === improvements.length - 1} aria-label="Next improvement" style={{ background: "transparent", border: `1px solid ${C.border2}`, borderRadius: "5px", padding: "3px 10px", color: active === improvements.length - 1 ? C.textDim : C.textSub, cursor: active === improvements.length - 1 ? "default" : "pointer", fontFamily: T.mono, fontSize: "11px" }}>→</button>
@@ -1653,7 +1724,7 @@ function EditJobModal({ job, onSave, onClose }) {
 
       const body = {
         model: MODEL, max_tokens: 6000,
-        system: ANALYSIS_PROMPT(resume, "brutal"),
+        system: ANALYSIS_PROMPT(resume, "recruiter"),
         messages: [{ role: "user", content: userMsg }],
       };
       if (targetUrl) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
