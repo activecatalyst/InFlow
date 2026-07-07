@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { useRegisterSW } from 'virtual:pwa-register/react';
+import { auth, googleProvider, db } from "./firebase";
+import { onAuthStateChanged, signInWithRedirect, getRedirectResult, signOut } from "firebase/auth";
+import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 // "Signal on graphite" — surfaces are warm neutrals so the green reads as
@@ -53,6 +56,40 @@ const store = {
   // Returns true on success, false on failure (e.g. QuotaExceededError).
   // Callers MUST check the result — a silent failure here means jobs vanish on reload.
   set: (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } },
+};
+
+// ─── CLOUD SYNC (Firebase) ────────────────────────────────────────────────────
+// localStorage stays the source of truth for instant load / offline use. When
+// signed in, we additionally mirror {resume, jobs, updatedResume} to a single
+// Firestore doc keyed by uid, so other computers signed into the same account
+// pick up the same pipeline. Conflicts are resolved last-write-wins via
+// `updatedAt` (client timestamp) — fine for a single-user tool used on a
+// handful of personal devices, not built for concurrent multi-user editing.
+const cloud = {
+  docRef: (uid) => doc(db, "users", uid),
+  push: async (uid, data) => {
+    try {
+      await setDoc(cloud.docRef(uid), { ...data, updatedAt: Date.now() }, { merge: true });
+      return true;
+    } catch (e) {
+      console.error("cloud sync push failed", e);
+      return false;
+    }
+  },
+  pullOnce: async (uid) => {
+    try {
+      const snap = await getDoc(cloud.docRef(uid));
+      return snap.exists() ? snap.data() : null;
+    } catch (e) {
+      console.error("cloud sync pull failed", e);
+      return null;
+    }
+  },
+  // Real-time listener — picks up changes made on another signed-in device
+  // without needing a manual refresh.
+  subscribe: (uid, cb) => onSnapshot(cloud.docRef(uid), (snap) => {
+    if (snap.exists()) cb(snap.data());
+  }, (e) => console.error("cloud sync listener failed", e)),
 };
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -2396,7 +2433,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
 }
 
 // ─── SETTINGS PAGE ────────────────────────────────────────────────────────────
-function SettingsPage({ resume, onUpdateResume }) {
+function SettingsPage({ resume, onUpdateResume, user, authReady, syncStatus, onSignIn, onSignOut }) {
   const [draft, setDraft]       = useState(resume);
   const [apiKey, setApiKey]     = useState(() => localStorage.getItem(KEYS.apiKey) || "");
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem(KEYS.proxyUrl) || "");
@@ -2428,6 +2465,28 @@ function SettingsPage({ resume, onUpdateResume }) {
     <div style={{ maxWidth: "740px", margin: "0 auto", padding: "48px 24px 0" }}>
       <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.accent, letterSpacing: "0.2em", textTransform: "uppercase", margin: "0 0 16px" }}>Settings</p>
       <h1 style={{ fontFamily: T.display, fontSize: "clamp(26px,4vw,38px)", color: C.text, fontWeight: 800, letterSpacing: "-0.03em", margin: "0 0 36px" }}>Settings</h1>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "28px", marginBottom: "18px" }}>
+        <Label color={C.accent}>Sync Across Computers</Label>
+        <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "0 0 18px" }}>
+          Sign in to mirror your resume and pipeline to the cloud. Sign into the same account on another computer to pick up where you left off — everything still works offline and caches locally either way.
+        </p>
+        {!authReady ? (
+          <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>checking sign-in status...</span>
+        ) : user ? (
+          <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: syncStatus === "error" ? C.red : C.accent, boxShadow: syncStatus === "synced" ? `0 0 8px ${C.accent}` : "none" }} />
+              <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim, letterSpacing: "0.05em" }}>
+                {user.email} — {syncStatus === "syncing" ? "syncing…" : syncStatus === "error" ? "sync error" : "synced"}
+              </span>
+            </div>
+            <Btn variant="ghost" small onClick={onSignOut}>Sign Out</Btn>
+          </div>
+        ) : (
+          <Btn onClick={onSignIn}>Sign In With Google</Btn>
+        )}
+      </div>
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "28px", marginBottom: "18px" }}>
         <Label color={C.accent}>Anthropic API Key</Label>
@@ -2579,6 +2638,15 @@ export default function App() {
   const [storageError, setStorageError] = useState(false);
   const hydrated = useRef(false);
 
+  // ─── Cloud sync state ───────────────────────────────────────────────────────
+  const [user, setUser]           = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | synced | error
+  // Set right before a remote snapshot writes local state, so the very next
+  // push-to-cloud effect run knows to skip — otherwise every remote update
+  // would immediately be pushed straight back up.
+  const applyingRemote = useRef(false);
+
   useEffect(() => {
     Promise.all([store.get(KEYS.resume), store.get(KEYS.jobs), store.get(KEYS.updatedResume)]).then(([r, j, u]) => {
       setResume(r || null);
@@ -2598,6 +2666,62 @@ export default function App() {
     if (!hydrated.current) return;
     setStorageError(!store.set(KEYS.jobs, JSON.stringify(jobs)));
   }, [jobs]);
+
+  // Track auth state across reloads/devices. We use redirect (not popup) sign-in
+  // because iOS home-screen PWAs run in a stripped-down WebView that can't
+  // reliably open/return a popup window — a full-page redirect works the same
+  // way on desktop browsers and installed iPhone PWAs alike.
+  useEffect(() => {
+    getRedirectResult(auth).catch((e) => console.error("google sign-in redirect failed", e));
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
+    return unsub;
+  }, []);
+
+  // On sign-in: pull whatever's in the cloud once (cloud wins on login — that's
+  // the point of linking a second computer), then keep a live listener open so
+  // changes made elsewhere while this tab is open show up automatically.
+  useEffect(() => {
+    if (!user || !hydrated.current) return;
+    let unsub = () => {};
+    (async () => {
+      const remote = await cloud.pullOnce(user.uid);
+      if (remote) {
+        applyingRemote.current = true;
+        if (typeof remote.resume === "string") { setResume(remote.resume); store.set(KEYS.resume, remote.resume); }
+        if (typeof remote.updatedResume === "string") { setUpdatedResume(remote.updatedResume); store.set(KEYS.updatedResume, remote.updatedResume); }
+        if (Array.isArray(remote.jobs)) setJobs(remote.jobs);
+      } else {
+        // Nothing in the cloud yet for this account — seed it with what's local.
+        cloud.push(user.uid, { resume, updatedResume, jobs });
+      }
+      setSyncStatus("synced");
+      unsub = cloud.subscribe(user.uid, (remoteData) => {
+        applyingRemote.current = true;
+        if (typeof remoteData.resume === "string") { setResume(remoteData.resume); store.set(KEYS.resume, remoteData.resume); }
+        if (typeof remoteData.updatedResume === "string") { setUpdatedResume(remoteData.updatedResume); store.set(KEYS.updatedResume, remoteData.updatedResume); }
+        if (Array.isArray(remoteData.jobs)) setJobs(remoteData.jobs);
+        setSyncStatus("synced");
+      });
+    })();
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // Push local changes up whenever resume/jobs/updatedResume change, as long as
+  // the change didn't just come *from* the cloud (see applyingRemote above).
+  useEffect(() => {
+    if (!user || !hydrated.current) return;
+    if (applyingRemote.current) { applyingRemote.current = false; return; }
+    setSyncStatus("syncing");
+    cloud.push(user.uid, { resume, updatedResume, jobs }).then(ok => setSyncStatus(ok ? "synced" : "error"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resume, updatedResume, jobs, user]);
+
+  const signInWithGoogle = async () => {
+    try { await signInWithRedirect(auth, googleProvider); }
+    catch (e) { console.error("sign-in failed", e); }
+  };
+  const signOutOfSync = async () => { await signOut(auth); setSyncStatus("idle"); };
 
   // Functional updates — no stale closures, safe under rapid successive saves.
   const handleSaveJob  = (j)          => setJobs(prev => [j, ...prev]);
@@ -2679,7 +2803,7 @@ export default function App() {
       {page === "analyzer" && <AnalyzerPage resume={resume} onSaveJob={handleSaveJob} onPatchJob={handlePatchJob} />}
       {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} updatedResume={updatedResume} />}
       {page === "resumes"  && <ResumePage   baseResume={resume} updatedResume={updatedResume} onUpdateBase={handleResume} onUpdateUpdated={handleUpdatedResume} />}
-      {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} />}
+      {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} user={user} authReady={authReady} syncStatus={syncStatus} onSignIn={signInWithGoogle} onSignOut={signOutOfSync} />}
       <UpdateToast />
     </div>
   );
