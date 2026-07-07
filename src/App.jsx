@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useRegisterSW } from 'virtual:pwa-register/react';
-import { auth, googleProvider, db } from "./firebase";
-import { onAuthStateChanged, signInWithRedirect, getRedirectResult, signOut } from "firebase/auth";
+import { auth, db } from "./firebase";
+import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
@@ -50,6 +50,7 @@ const KEYS = {
   apiKey:       "inflow_api_key",
   proxyUrl:     "inflow_proxy_url",
   updatedResume:"inflow_resume_updated",
+  syncCode:     "inflow_sync_code",
 };
 const store = {
   get: async (k) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -59,35 +60,47 @@ const store = {
 };
 
 // ─── CLOUD SYNC (Firebase) ────────────────────────────────────────────────────
-// localStorage stays the source of truth for instant load / offline use. When
-// signed in, we additionally mirror {resume, jobs, updatedResume} to a single
-// Firestore doc keyed by uid, so other computers signed into the same account
-// pick up the same pipeline. Conflicts are resolved last-write-wins via
-// `updatedAt` (client timestamp) — fine for a single-user tool used on a
-// handful of personal devices, not built for concurrent multi-user editing.
+// localStorage stays the source of truth for instant load / offline use. On
+// top of that, we mirror {resume, jobs, updatedResume} to a Firestore doc
+// keyed by a random human-typeable "sync code" instead of a Google account —
+// no OAuth redirect, no cross-domain bounce, so it can't hit the browser
+// storage-partitioning issues that broke Google sign-in across domains.
+// Auth is just anonymous (instant, same-origin) so Firestore rules can still
+// require request.auth != null; the code itself is the real shared secret.
+// Conflicts are last-write-wins via `updatedAt` — fine for a personal tool
+// used on a handful of devices, not built for concurrent multi-user editing.
+const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L — easy to type from memory
+const genSyncCode = () => {
+  let s = "";
+  for (let i = 0; i < 8; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+  return s;
+};
+const normalizeCode = (raw) => (raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+const formatCode = (code) => code ? `${code.slice(0, 4)}-${code.slice(4)}` : "";
+
 const cloud = {
-  docRef: (uid) => doc(db, "users", uid),
-  push: async (uid, data) => {
+  docRef: (code) => doc(db, "syncCodes", code),
+  push: async (code, data) => {
     try {
-      await setDoc(cloud.docRef(uid), { ...data, updatedAt: Date.now() }, { merge: true });
+      await setDoc(cloud.docRef(code), { ...data, updatedAt: Date.now() }, { merge: true });
       return true;
     } catch (e) {
       console.error("cloud sync push failed", e);
       return false;
     }
   },
-  pullOnce: async (uid) => {
+  pullOnce: async (code) => {
     try {
-      const snap = await getDoc(cloud.docRef(uid));
+      const snap = await getDoc(cloud.docRef(code));
       return snap.exists() ? snap.data() : null;
     } catch (e) {
       console.error("cloud sync pull failed", e);
       return null;
     }
   },
-  // Real-time listener — picks up changes made on another signed-in device
+  // Real-time listener — picks up changes made on another linked device
   // without needing a manual refresh.
-  subscribe: (uid, cb) => onSnapshot(cloud.docRef(uid), (snap) => {
+  subscribe: (code, cb) => onSnapshot(cloud.docRef(code), (snap) => {
     if (snap.exists()) cb(snap.data());
   }, (e) => console.error("cloud sync listener failed", e)),
 };
@@ -2433,13 +2446,21 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
 }
 
 // ─── SETTINGS PAGE ────────────────────────────────────────────────────────────
-function SettingsPage({ resume, onUpdateResume, user, authReady, syncStatus, onSignIn, onSignOut }) {
+function SettingsPage({ resume, onUpdateResume, authReady, syncCode, syncStatus, linkError, onLinkCode }) {
   const [draft, setDraft]       = useState(resume);
   const [apiKey, setApiKey]     = useState(() => localStorage.getItem(KEYS.apiKey) || "");
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem(KEYS.proxyUrl) || "");
   const [saved, setSaved]       = useState(false);
   const [keySaved, setKeySaved] = useState(false);
+  const [codeInput, setCodeInput] = useState("");
+  const [codeCopied, setCodeCopied] = useState(false);
   const charOk = draft.trim().length >= 100;
+
+  const copyCode = () => {
+    if (!syncCode) return;
+    navigator.clipboard?.writeText(formatCode(syncCode));
+    setCodeCopied(true); setTimeout(() => setCodeCopied(false), 2000);
+  };
 
   const save = async () => {
     if (!charOk) return;
@@ -2469,23 +2490,38 @@ function SettingsPage({ resume, onUpdateResume, user, authReady, syncStatus, onS
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "28px", marginBottom: "18px" }}>
         <Label color={C.accent}>Sync Across Computers</Label>
         <p style={{ fontFamily: T.body, fontSize: "15px", color: C.textMid, lineHeight: 1.8, margin: "0 0 18px" }}>
-          Sign in to mirror your resume and pipeline to the cloud. Sign into the same account on another computer to pick up where you left off — everything still works offline and caches locally either way.
+          This device has a sync code — enter the same code on your other computer or iPhone (Settings → Link a Device) to connect them. No account needed; everything still works offline and caches locally either way.
         </p>
         {!authReady ? (
-          <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>checking sign-in status...</span>
-        ) : user ? (
-          <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim }}>setting up sync...</span>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap", marginBottom: "22px" }}>
+            <div style={{ background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "10px 16px", fontFamily: T.code, fontSize: "18px", letterSpacing: "0.08em", color: C.text }}>
+              {syncCode ? formatCode(syncCode) : "generating..."}
+            </div>
+            <Btn variant="ghost" small onClick={copyCode} disabled={!syncCode}>{codeCopied ? "✓ Copied" : "Copy Code"}</Btn>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: syncStatus === "error" ? C.red : C.accent, boxShadow: syncStatus === "synced" ? `0 0 8px ${C.accent}` : "none" }} />
               <span style={{ fontFamily: T.mono, fontSize: "11px", color: C.textDim, letterSpacing: "0.05em" }}>
-                {user.email} — {syncStatus === "syncing" ? "syncing…" : syncStatus === "error" ? "sync error" : "synced"}
+                {syncStatus === "syncing" ? "syncing…" : syncStatus === "error" ? "sync error" : "synced"}
               </span>
             </div>
-            <Btn variant="ghost" small onClick={onSignOut}>Sign Out</Btn>
           </div>
-        ) : (
-          <Btn onClick={onSignIn}>Sign In With Google</Btn>
         )}
+
+        <Label>Link a Device</Label>
+        <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textDim, lineHeight: 1.7, margin: "0 0 12px" }}>
+          Got a code from another device? Enter it here to pull its data down and link this device to it — this replaces what's currently on this device.
+        </p>
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+          <input
+            type="text" value={codeInput} onChange={e => setCodeInput(e.target.value)}
+            placeholder="XXXX-XXXX" aria-label="Sync code from another device"
+            style={{ background: C.surface2, border: `1px solid ${C.border2}`, borderRadius: "8px", padding: "10px 14px", fontSize: "14px", color: C.text, fontFamily: T.code, outline: "none", width: "160px" }}
+          />
+          <Btn small onClick={() => onLinkCode(codeInput)} disabled={!codeInput.trim()}>Link</Btn>
+        </div>
+        {linkError && <p style={{ fontFamily: T.mono, fontSize: "11px", color: C.red, margin: "10px 0 0" }}>{linkError}</p>}
       </div>
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: "14px", padding: "28px", marginBottom: "18px" }}>
@@ -2639,9 +2675,11 @@ export default function App() {
   const hydrated = useRef(false);
 
   // ─── Cloud sync state ───────────────────────────────────────────────────────
-  const [user, setUser]           = useState(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | synced | error
+  const [user, setUser]             = useState(null);       // anonymous Firebase user — invisible to the person using the app
+  const [authReady, setAuthReady]   = useState(false);
+  const [syncCode, setSyncCode]     = useState(null);        // the code this device is currently linked to
+  const [syncStatus, setSyncStatus] = useState("idle");      // idle | syncing | synced | error
+  const [linkError, setLinkError]   = useState("");
   // Set right before a remote snapshot writes local state, so the very next
   // push-to-cloud effect run knows to skip — otherwise every remote update
   // would immediately be pushed straight back up.
@@ -2667,35 +2705,48 @@ export default function App() {
     setStorageError(!store.set(KEYS.jobs, JSON.stringify(jobs)));
   }, [jobs]);
 
-  // Track auth state across reloads/devices. We use redirect (not popup) sign-in
-  // because iOS home-screen PWAs run in a stripped-down WebView that can't
-  // reliably open/return a popup window — a full-page redirect works the same
-  // way on desktop browsers and installed iPhone PWAs alike.
+  // Sign in anonymously in the background — no button, no redirect, nothing
+  // cross-domain, so this can't hit the browser storage-partitioning issue
+  // that broke Google sign-in. This just gives Firestore something to check
+  // in its security rules (request.auth != null); the sync code below is
+  // what actually identifies which cloud doc this device talks to.
   useEffect(() => {
-    getRedirectResult(auth).catch((e) => console.error("google sign-in redirect failed", e));
-    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthReady(true); });
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (!u) { signInAnonymously(auth).catch((e) => console.error("anonymous sign-in failed", e)); return; }
+      setUser(u);
+      setAuthReady(true);
+    });
     return unsub;
   }, []);
 
-  // On sign-in: pull whatever's in the cloud once (cloud wins on login — that's
-  // the point of linking a second computer), then keep a live listener open so
-  // changes made elsewhere while this tab is open show up automatically.
+  // Once we have both an anonymous session and hydrated local data, figure out
+  // which sync code this device belongs to. First time ever: mint a new code
+  // and seed the cloud with local data. Returning device: pull whatever's in
+  // the cloud for that code (cloud wins — that's the point of a second
+  // device), then keep a live listener open for updates from elsewhere.
   useEffect(() => {
     if (!user || !hydrated.current) return;
     let unsub = () => {};
     (async () => {
-      const remote = await cloud.pullOnce(user.uid);
-      if (remote) {
-        applyingRemote.current = true;
-        if (typeof remote.resume === "string") { setResume(remote.resume); store.set(KEYS.resume, remote.resume); }
-        if (typeof remote.updatedResume === "string") { setUpdatedResume(remote.updatedResume); store.set(KEYS.updatedResume, remote.updatedResume); }
-        if (Array.isArray(remote.jobs)) setJobs(remote.jobs);
+      let code = await store.get(KEYS.syncCode);
+      if (!code) {
+        code = genSyncCode();
+        await store.set(KEYS.syncCode, code);
+        await cloud.push(code, { resume, updatedResume, jobs });
       } else {
-        // Nothing in the cloud yet for this account — seed it with what's local.
-        cloud.push(user.uid, { resume, updatedResume, jobs });
+        const remote = await cloud.pullOnce(code);
+        if (remote) {
+          applyingRemote.current = true;
+          if (typeof remote.resume === "string") { setResume(remote.resume); store.set(KEYS.resume, remote.resume); }
+          if (typeof remote.updatedResume === "string") { setUpdatedResume(remote.updatedResume); store.set(KEYS.updatedResume, remote.updatedResume); }
+          if (Array.isArray(remote.jobs)) setJobs(remote.jobs);
+        } else {
+          cloud.push(code, { resume, updatedResume, jobs });
+        }
       }
+      setSyncCode(code);
       setSyncStatus("synced");
-      unsub = cloud.subscribe(user.uid, (remoteData) => {
+      unsub = cloud.subscribe(code, (remoteData) => {
         applyingRemote.current = true;
         if (typeof remoteData.resume === "string") { setResume(remoteData.resume); store.set(KEYS.resume, remoteData.resume); }
         if (typeof remoteData.updatedResume === "string") { setUpdatedResume(remoteData.updatedResume); store.set(KEYS.updatedResume, remoteData.updatedResume); }
@@ -2710,18 +2761,30 @@ export default function App() {
   // Push local changes up whenever resume/jobs/updatedResume change, as long as
   // the change didn't just come *from* the cloud (see applyingRemote above).
   useEffect(() => {
-    if (!user || !hydrated.current) return;
+    if (!syncCode || !hydrated.current) return;
     if (applyingRemote.current) { applyingRemote.current = false; return; }
     setSyncStatus("syncing");
-    cloud.push(user.uid, { resume, updatedResume, jobs }).then(ok => setSyncStatus(ok ? "synced" : "error"));
+    cloud.push(syncCode, { resume, updatedResume, jobs }).then(ok => setSyncStatus(ok ? "synced" : "error"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resume, updatedResume, jobs, user]);
+  }, [resume, updatedResume, jobs, syncCode]);
 
-  const signInWithGoogle = async () => {
-    try { await signInWithRedirect(auth, googleProvider); }
-    catch (e) { console.error("sign-in failed", e); }
+  // Called from Settings when the person types in a code from another device.
+  // Cloud wins here too — linking a device replaces its local data with
+  // whatever's already stored under that code.
+  const linkWithCode = async (raw) => {
+    const code = normalizeCode(raw);
+    if (code.length < 6) { setLinkError("That doesn't look like a full code."); return; }
+    const remote = await cloud.pullOnce(code);
+    if (!remote) { setLinkError("No data found for that code — check it was typed correctly."); return; }
+    applyingRemote.current = true;
+    if (typeof remote.resume === "string") { setResume(remote.resume); store.set(KEYS.resume, remote.resume); }
+    if (typeof remote.updatedResume === "string") { setUpdatedResume(remote.updatedResume); store.set(KEYS.updatedResume, remote.updatedResume); }
+    if (Array.isArray(remote.jobs)) setJobs(remote.jobs);
+    await store.set(KEYS.syncCode, code);
+    setSyncCode(code);
+    setSyncStatus("synced");
+    setLinkError("");
   };
-  const signOutOfSync = async () => { await signOut(auth); setSyncStatus("idle"); };
 
   // Functional updates — no stale closures, safe under rapid successive saves.
   const handleSaveJob  = (j)          => setJobs(prev => [j, ...prev]);
@@ -2803,7 +2866,7 @@ export default function App() {
       {page === "analyzer" && <AnalyzerPage resume={resume} onSaveJob={handleSaveJob} onPatchJob={handlePatchJob} />}
       {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} updatedResume={updatedResume} />}
       {page === "resumes"  && <ResumePage   baseResume={resume} updatedResume={updatedResume} onUpdateBase={handleResume} onUpdateUpdated={handleUpdatedResume} />}
-      {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} user={user} authReady={authReady} syncStatus={syncStatus} onSignIn={signInWithGoogle} onSignOut={signOutOfSync} />}
+      {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} authReady={authReady} syncCode={syncCode} syncStatus={syncStatus} linkError={linkError} onLinkCode={linkWithCode} />}
       <UpdateToast />
     </div>
   );
