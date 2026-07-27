@@ -3,6 +3,7 @@ import { useRegisterSW } from 'virtual:pwa-register/react';
 import { auth, db } from "./firebase";
 import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
 import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+import { makeJob, normalizeJob, migrateJobs, findJob, AC_JOBS_KEY } from "./acJobs";
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 // "Signal on graphite" — surfaces are warm neutrals so the green reads as
@@ -46,7 +47,7 @@ const MODEL = "claude-sonnet-5";
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
 const KEYS = {
   resume:       "inflow_resume_v2",
-  jobs:         "inflow_jobs_v2",
+  jobs:         AC_JOBS_KEY,        // shared suite job store (was "inflow_jobs_v2")
   apiKey:       "inflow_api_key",
   proxyUrl:     "inflow_proxy_url",
   updatedResume:"inflow_resume_updated",
@@ -1133,7 +1134,7 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
         hiringVerdict:       parsedDec?.verdict || null,
         decisionConfidence:  parsedConf?.level || null,
         // Keep the source text so the posting survives even if the URL rots.
-        jobDescription:      isUrl(input) ? "" : input.trim().slice(0, 8000),
+        jd:                  isUrl(input) ? "" : input.trim().slice(0, 8000),
       };
 
       if (savedJobIdRef.current) {
@@ -1146,19 +1147,38 @@ function AnalyzerPage({ resume, onSaveJob, onPatchJob }) {
           ...listing,
         });
       } else {
-        const id = uid();
-        savedJobIdRef.current = id;
-        const t2 = now();
-        onSaveJob({
-          id, title: autoTitle, company: autoCompany,
-          url: isUrl(input) ? input.trim() : "", status: "saved",
-          recruiterScore: parsedScores.recruiter, hmScore: parsedScores.hm,
-          tier: parsedTier?.label || null,
-          notes: "", analysis: text, dateAdded: t2, dateSaved: t2,
-          dateApplied: null, dateScreen: null, dateInterview: null,
-          dateOffer: null, dateRejected: null,
-          ...listing,
+        // Build the canonical core via the shared factory (id derives from the
+        // url, so this dedupes with a job Path Pursuit already saved), then
+        // layer InFlow's own fields on top.
+        const base = makeJob({
+          url: isUrl(input) ? input.trim() : "",
+          title: autoTitle, company: autoCompany,
+          jd: listing.jd, source: "inflow", status: "saved",
         });
+        const id = base.id;
+        savedJobIdRef.current = id;
+        const existing = base.url ? findJob(id) : null;
+        if (existing) {
+          // Already tracked (Path Pursuit saved it, or a prior analysis) — enrich
+          // it without disturbing its status/appliedAt.
+          onPatchJob(id, {
+            title: autoTitle, company: autoCompany,
+            recruiterScore: parsedScores.recruiter, hmScore: parsedScores.hm,
+            tier: parsedTier?.label || null, analysis: text,
+            ...listing,
+          });
+        } else {
+          const t2 = base.savedAt;
+          onSaveJob({
+            ...base,
+            recruiterScore: parsedScores.recruiter, hmScore: parsedScores.hm,
+            tier: parsedTier?.label || null,
+            notes: "", analysis: text, dateAdded: t2, dateSaved: t2,
+            dateApplied: null, dateScreen: null, dateInterview: null,
+            dateOffer: null, dateRejected: null,
+            ...listing,
+          });
+        }
       }
 
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth" }), 200);
@@ -2126,7 +2146,7 @@ ${job.analysis?.slice(0, 800) || "No analysis available."}`;
 }
 
 // ─── TRACKER PAGE ─────────────────────────────────────────────────────────────
-function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }) {
+function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume, focusId }) {
   const [filter, setFilter]       = useState("all");
   const [expandedId, setExpandedId] = useState(null);
   const [editingNotes, setEditingNotes] = useState(null);
@@ -2134,6 +2154,26 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
   const [showAdd, setShowAdd]     = useState(false);
   const [editingJob, setEditingJob] = useState(null);
   const [newJob, setNewJob]       = useState({ title: "", company: "", url: "", status: "saved", notes: "", location: "", workModel: "", employmentType: "", seniority: "", salary: "", team: "" });
+
+  // Deep link (?job=<id> from Path Pursuit): reveal the right filter, expand the
+  // card, scroll to it, and flash a highlight.
+  useEffect(() => {
+    if (!focusId) return;
+    const target = jobs.find(j => j.id === focusId);
+    if (!target) return;
+    setFilter(target.status === "rejected" ? "rejected" : "all");
+    setExpandedId(focusId);
+    const t = setTimeout(() => {
+      const el = document.getElementById("acjob-" + focusId);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.style.boxShadow = `0 0 0 1px ${C.accent}, 0 0 24px ${C.accentGlow}`;
+        setTimeout(() => { el.style.boxShadow = ""; }, 2200);
+      }
+    }, 180);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, jobs.length]);
 
   const activeJobs   = jobs.filter(j => j.status !== "rejected");
   const rejectedJobs = jobs.filter(j => j.status === "rejected");
@@ -2150,8 +2190,12 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
 
   const addJob = () => {
     if (!newJob.title.trim()) return;
-    const t = now();
-    onAddJob({ id: uid(), ...newJob, recruiterScore: null, hmScore: null, tier: null, analysis: "", dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null });
+    const base = makeJob({ url: newJob.url, title: newJob.title, company: newJob.company, source: "inflow", status: newJob.status });
+    const t = base.savedAt;
+    const dates = { dateAdded: t, dateSaved: t, dateApplied: null, dateScreen: null, dateInterview: null, dateOffer: null, dateRejected: null };
+    const dk = SM[base.status]?.dateKey;
+    if (dk && dk !== "dateSaved") dates[dk] = t;   // stamp the chosen starting stage
+    onAddJob({ ...base, notes: newJob.notes, location: newJob.location, workModel: newJob.workModel, employmentType: newJob.employmentType, seniority: newJob.seniority, salary: newJob.salary, team: newJob.team, recruiterScore: null, hmScore: null, tier: null, analysis: "", ...dates });
     setNewJob({ title: "", company: "", url: "", status: "saved", notes: "", location: "", workModel: "", employmentType: "", seniority: "", salary: "", team: "" });
     setShowAdd(false);
   };
@@ -2255,7 +2299,7 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
             const exp = expandedId === job.id;
             const jobTier = findTier(job.tier);
             return (
-              <div key={job.id} style={{ background: C.surface, border: `1px solid ${exp ? C.border2 : C.border}`, borderRadius: "12px", overflow: "hidden" }}>
+              <div key={job.id} id={"acjob-" + job.id} style={{ background: C.surface, border: `1px solid ${exp ? C.border2 : C.border}`, borderRadius: "12px", overflow: "hidden", transition: "box-shadow 0.4s" }}>
                 <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: "14px" }}>
                   <Pill label={st.short} color={st.color} bg={st.bg} />
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -2374,12 +2418,12 @@ function TrackerPage({ jobs, onUpdateJob, onDeleteJob, onAddJob, updatedResume }
                       )}
                     </div>
 
-                    {job.jobDescription && (
+                    {job.jd && (
                       <div style={{ marginBottom: "18px" }}>
                         <Label>Saved Job Description</Label>
                         <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: "8px", padding: "14px 16px", maxHeight: "200px", overflowY: "auto" }}>
                           <p style={{ fontFamily: T.body, fontSize: "13px", color: C.textSub, margin: 0, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
-                            {job.jobDescription}
+                            {job.jd}
                           </p>
                         </div>
                       </div>
@@ -2670,6 +2714,10 @@ export default function App() {
   const [updatedResume, setUpdatedResume] = useState("");
   const [jobs, setJobs]                 = useState([]);
   const [page, setPage]                 = useState("analyzer");
+  // Deep link from Path Pursuit: ?job=<id> selects/scrolls to that job.
+  const [focusJob] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get("job") || null; } catch { return null; }
+  });
 
   const [storageError, setStorageError] = useState(false);
   const hydrated = useRef(false);
@@ -2686,23 +2734,26 @@ export default function App() {
   const applyingRemote = useRef(false);
 
   useEffect(() => {
+    // Migrate legacy stores into ac_jobs_v1 once, before first read (guarded so
+    // it can't run twice, and a no-op if Path Pursuit already migrated).
+    migrateJobs();
     Promise.all([store.get(KEYS.resume), store.get(KEYS.jobs), store.get(KEYS.updatedResume)]).then(([r, j, u]) => {
       setResume(r || null);
       let parsed = [];
       try { parsed = j ? JSON.parse(j) : []; } catch { parsed = []; }
       if (!Array.isArray(parsed)) parsed = [];
-      setJobs(parsed);
+      setJobs(parsed.map(normalizeJob));
       setUpdatedResume(u || "");
       hydrated.current = true;
       setReady(true);
     });
   }, []);
 
-  // Single write path: whatever `jobs` becomes, it gets persisted — after
-  // hydration only, so the initial [] never clobbers stored data.
+  // Single write path: whatever `jobs` becomes, it gets persisted (canonical) —
+  // after hydration only, so the initial [] never clobbers stored data.
   useEffect(() => {
     if (!hydrated.current) return;
-    setStorageError(!store.set(KEYS.jobs, JSON.stringify(jobs)));
+    setStorageError(!store.set(KEYS.jobs, JSON.stringify(jobs.map(normalizeJob))));
   }, [jobs]);
 
   // Sign in anonymously in the background — no button, no redirect, nothing
@@ -2732,16 +2783,16 @@ export default function App() {
       if (!code) {
         code = genSyncCode();
         await store.set(KEYS.syncCode, code);
-        await cloud.push(code, { resume, updatedResume, jobs });
+        await cloud.push(code, { resume, updatedResume, jobs: jobs.map(normalizeJob) });
       } else {
         const remote = await cloud.pullOnce(code);
         if (remote) {
           applyingRemote.current = true;
           if (typeof remote.resume === "string") { setResume(remote.resume); store.set(KEYS.resume, remote.resume); }
           if (typeof remote.updatedResume === "string") { setUpdatedResume(remote.updatedResume); store.set(KEYS.updatedResume, remote.updatedResume); }
-          if (Array.isArray(remote.jobs)) setJobs(remote.jobs);
+          if (Array.isArray(remote.jobs)) setJobs(remote.jobs.map(normalizeJob));
         } else {
-          cloud.push(code, { resume, updatedResume, jobs });
+          cloud.push(code, { resume, updatedResume, jobs: jobs.map(normalizeJob) });
         }
       }
       setSyncCode(code);
@@ -2750,7 +2801,7 @@ export default function App() {
         applyingRemote.current = true;
         if (typeof remoteData.resume === "string") { setResume(remoteData.resume); store.set(KEYS.resume, remoteData.resume); }
         if (typeof remoteData.updatedResume === "string") { setUpdatedResume(remoteData.updatedResume); store.set(KEYS.updatedResume, remoteData.updatedResume); }
-        if (Array.isArray(remoteData.jobs)) setJobs(remoteData.jobs);
+        if (Array.isArray(remoteData.jobs)) setJobs(remoteData.jobs.map(normalizeJob));
         setSyncStatus("synced");
       });
     })();
@@ -2764,7 +2815,7 @@ export default function App() {
     if (!syncCode || !hydrated.current) return;
     if (applyingRemote.current) { applyingRemote.current = false; return; }
     setSyncStatus("syncing");
-    cloud.push(syncCode, { resume, updatedResume, jobs }).then(ok => setSyncStatus(ok ? "synced" : "error"));
+    cloud.push(syncCode, { resume, updatedResume, jobs: jobs.map(normalizeJob) }).then(ok => setSyncStatus(ok ? "synced" : "error"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resume, updatedResume, jobs, syncCode]);
 
@@ -2779,7 +2830,7 @@ export default function App() {
     applyingRemote.current = true;
     if (typeof remote.resume === "string") { setResume(remote.resume); store.set(KEYS.resume, remote.resume); }
     if (typeof remote.updatedResume === "string") { setUpdatedResume(remote.updatedResume); store.set(KEYS.updatedResume, remote.updatedResume); }
-    if (Array.isArray(remote.jobs)) setJobs(remote.jobs);
+    if (Array.isArray(remote.jobs)) setJobs(remote.jobs.map(normalizeJob));
     await store.set(KEYS.syncCode, code);
     setSyncCode(code);
     setSyncStatus("synced");
@@ -2787,7 +2838,16 @@ export default function App() {
   };
 
   // Functional updates — no stale closures, safe under rapid successive saves.
-  const handleSaveJob  = (j)          => setJobs(prev => [j, ...prev]);
+  const handleSaveJob  = (j)          => setJobs(prev => {
+    // Dedupe by id. If this posting is already tracked (e.g. Path Pursuit saved
+    // it first, or it was analyzed before), merge new discovery/analysis data
+    // but preserve the existing status + appliedAt — InFlow owns those.
+    const i = prev.findIndex(p => p.id === j.id);
+    if (i === -1) return [j, ...prev];
+    const next = prev.slice();
+    next[i] = { ...prev[i], ...j, status: prev[i].status, appliedAt: prev[i].appliedAt };
+    return next;
+  });
   const handleUpdate   = (u)          => setJobs(prev => prev.map(j => j.id === u.id ? u : j));
   const handlePatchJob = (id, patch)  => setJobs(prev => prev.map(j => j.id === id ? { ...j, ...patch } : j));
   const handleDelete   = (id)         => setJobs(prev => prev.filter(j => j.id !== id));
@@ -2795,6 +2855,9 @@ export default function App() {
   const handleResume        = (r) => setResume(r);
   const handleUpdatedResume = (r) => setUpdatedResume(r);
   const handleOnboard       = (r) => { setResume(r); setPage("analyzer"); };
+
+  // If deep-linked to a specific job, land on the pipeline once loaded.
+  useEffect(() => { if (ready && resume && focusJob) setPage("tracker"); }, [ready, resume, focusJob]);
 
   const pending = jobs.filter(j => ["screen","interview"].includes(j.status)).length;
 
@@ -2864,7 +2927,7 @@ export default function App() {
       )}
 
       {page === "analyzer" && <AnalyzerPage resume={resume} onSaveJob={handleSaveJob} onPatchJob={handlePatchJob} />}
-      {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} updatedResume={updatedResume} />}
+      {page === "tracker"  && <TrackerPage  jobs={jobs} onUpdateJob={handleUpdate} onDeleteJob={handleDelete} onAddJob={handleAdd} updatedResume={updatedResume} focusId={focusJob} />}
       {page === "resumes"  && <ResumePage   baseResume={resume} updatedResume={updatedResume} onUpdateBase={handleResume} onUpdateUpdated={handleUpdatedResume} />}
       {page === "settings" && <SettingsPage resume={resume} onUpdateResume={handleResume} authReady={authReady} syncCode={syncCode} syncStatus={syncStatus} linkError={linkError} onLinkCode={linkWithCode} />}
       <UpdateToast />
